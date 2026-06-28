@@ -1,0 +1,816 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dak Desk V7.9.1</title>
+<meta name="theme-color" content="#ffffff">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
+
+<!-- Dependencies -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/localforage/1.10.0/localforage.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://unpkg.com/lucide@latest"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div id="toastMsg"><i data-lucide="check-circle" style="color: var(--success);"></i> <span id="toastText">Notification</span></div>
+
+<!-- Modals -->
+<div id="overrideModal" class="modal-overlay">
+  <div class="modal-content">
+    <h3 class="modal-title text-danger" style="color: var(--danger)">⚠️ Manual Balance Override</h3>
+    <p style="font-size:0.875rem; color:var(--text-muted); margin-bottom: 16px;">Force a mathematical break in the cash ledger for <strong id="override-date"></strong>. This sets the opening balance explicitly.</p>
+    <div class="input-group" style="margin-bottom:12px;"><label>New Opening Balance (₹)</label><input type="number" id="override-input" placeholder="0"></div>
+    <div class="input-group" style="margin-bottom:20px;"><label style="color:var(--danger);">Type "OVERRIDE" to confirm</label><input type="text" id="override-confirm" oninput="checkOverrideConfirm()"></div>
+    <div class="modal-actions"><button class="btn btn-outline" onclick="closeOverrideModal()">Cancel</button><button class="btn btn-primary" id="override-save-btn" disabled onclick="saveOverride()">Force Override</button></div>
+  </div>
+</div>
+
+<div id="verifyCashModal" class="modal-overlay">
+  <div class="modal-content">
+    <h3 class="modal-title">Start of Day Verification</h3>
+    <p style="font-size:0.875rem; color:var(--text-muted); margin-bottom: 16px;">Verify physical cash for <strong id="ver-current-date"></strong> based on previous tally (<strong id="ver-date"></strong>).</p>
+    <div style="background:var(--bg-input); border:1px solid var(--border); border-radius:8px; padding:16px; margin-bottom:20px;">
+      <h4 style="margin:0 0 10px; font-size:0.75rem; text-transform:uppercase; color:var(--text-muted); display:flex; justify-content:space-between;"><span>Previous Closing Tally</span><span id="ver-total" style="font-size:1rem; color:var(--text-main); font-weight:800;"></span></h4>
+      <div id="ver-details" style="font-size:0.875rem; font-family:monospace; line-height:1.6;"></div>
+    </div>
+    <button class="btn btn-success w-full" onclick="confirmCashVerification()">I verify this cash is present</button>
+  </div>
+</div>
+
+<div id="confirmModal" class="modal-overlay">
+  <div class="modal-content">
+    <h3 class="modal-title">Review Entry Details</h3>
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px;">
+      <div class="input-group"><label>Account Number</label><span id="modal-accNo" style="font-weight:600; font-size:1rem;">--</span></div>
+      <div class="input-group"><label>Depositor Name</label><span id="modal-depName" style="font-weight:600; font-size:1rem;">--</span></div>
+      <div class="input-group"><label>PR Number</label><span id="modal-prNo" style="font-weight:600; font-size:1rem;">--</span></div>
+      <div class="input-group"><label>Term</label><span id="modal-term" style="font-weight:600; font-size:1rem;">--</span></div>
+      <div class="input-group"><label>Deposit Amount</label><span id="modal-depAmount" style="font-weight:600; font-size:1rem;">--</span></div>
+      <div class="input-group"><label style="color:var(--success);">Calculated Incentive</label><span id="modal-incentive" style="font-weight:800; color:var(--success); font-size:1.1rem;">--</span></div>
+    </div>
+    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Edit</button><button class="btn btn-primary" onclick="confirmAddEntry()">Confirm & Add</button></div>
+  </div>
+</div>
+
+<div id="modifyModal" class="modal-overlay">
+  <div class="modal-content" style="max-width: 600px;">
+    <h3 class="modal-title">Edit Entry</h3>
+    <div class="form-row"><div class="input-group" style="flex:2"><label>Account Number</label><input type="text" id="mod-accNo" maxlength="12" oninput="this.value = this.value.replace(/[^0-9]/g, '');"></div><div class="input-group"><label>PR No.</label><input type="number" id="mod-prNo" min="1"></div></div>
+    <div class="form-row"><div class="input-group"><label>Name of Depositor</label><input type="text" id="mod-depName"></div></div>
+    <div class="form-row"><div class="input-group"><label>Deposit (₹)</label><input type="number" id="mod-depAmount" step="100" min="1000" oninput="updateModPreview()"></div><div class="input-group"><label>Term</label><select id="mod-tdTerm" onchange="updateModPreview()"><option value="1">1 Year (0.5%)</option><option value="2">2 Year (1.0%)</option><option value="3">3 Year (1.0%)</option><option value="5">5 Year (2.0%)</option></select></div></div>
+    <div style="background:#eff6ff; border:1px solid #bfdbfe; border-radius:8px; padding:12px; margin-bottom:20px; font-size:0.875rem; color:#1d4ed8;">New incentive: <strong id="mod-preview" style="font-size:1.1rem;">₹0</strong></div>
+    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModifyModal()">Cancel</button><button class="btn btn-primary" onclick="saveModifiedEntry()">Save</button></div>
+  </div>
+</div>
+
+<div id="newBillModal" class="modal-overlay">
+  <div class="modal-content">
+    <h3 class="modal-title">Start New Bill</h3>
+    <p style="font-size:0.875rem; color:var(--text-muted); margin-bottom: 20px;">Save the current bill to history and start a fresh one.</p>
+    <div class="input-group" style="margin-bottom:24px;"><label>Bill Name / Label</label><input type="text" id="newBillLabel" placeholder="e.g. June 2026 Bill"></div>
+    <div class="modal-actions"><button class="btn btn-outline" onclick="closeNewBillModal()">Cancel</button><button class="btn btn-primary" onclick="confirmNewBill()">Save & Start New</button></div>
+  </div>
+</div>
+
+<div id="ledgerEditModal" class="modal-overlay no-print">
+  <div class="modal-content" style="max-width: 680px;">
+    <h3 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 24px; display: flex; align-items: center; gap: 8px; color: var(--text-main);"><div style="background: var(--bg-input); padding: 8px; border-radius: 8px;"><i data-lucide="edit-3" style="color: var(--blue);"></i></div>Edit Account Entry</h3>
+    <div class="form-row"><div class="input-group"><label>Date</label><input type="date" id="ledgerModDate"></div><div class="input-group"><label>Scheme</label><select id="ledgerModScheme"></select></div><div class="input-group" style="max-width: 120px;"><label>PR No (1-50)</label><input type="number" id="ledgerModPr" min="1" max="50"></div></div>
+    <div class="form-row"><div class="input-group"><label>Account Number</label><input type="text" id="ledgerModAcc" placeholder="12 Digits" maxlength="12" oninput="this.value = this.value.replace(/[^0-9]/g, '');"></div><div class="input-group"><label>CIF</label><input type="text" id="ledgerModCif" placeholder="9 Digits" maxlength="9" oninput="this.value = this.value.replace(/[^0-9]/g, '');"></div><div class="input-group"><label>Phone</label><input type="text" id="ledgerModPhone" placeholder="10 Digits" maxlength="10" oninput="this.value = this.value.replace(/[^0-9]/g, '');"></div></div>
+    <div class="form-row"><div class="input-group"><label>Aadhaar</label><input type="text" id="ledgerModAadhaar" placeholder="12 Digits" maxlength="12" oninput="this.value = this.value.replace(/[^0-9]/g, '');"></div><div class="input-group"><label>PAN</label><input type="text" id="ledgerModPan" placeholder="10 Chars" maxlength="10" oninput="this.value = this.value.toUpperCase().replace(/[^A-Z0-9]/g, '');"></div></div>
+    <div class="form-row"><div class="input-group" style="flex: 2;"><label>Customer Name</label><input type="text" id="ledgerModName"></div><div class="input-group"><label>Deposit Amount (₹)</label><input type="number" id="ledgerModAmount"></div></div>
+    <div class="form-row" style="margin-bottom: 0;"><div class="input-group" style="flex: 2;"><label>Remarks / Nominee</label><input type="text" id="ledgerModRemarks" placeholder="Optional"></div><div class="input-group" style="flex: 1;"><label>Passbook Status</label><select id="ledgerModPbStatus" style="font-weight: 600;"><option value="N/A">N/A</option><option value="Pending AO">Pending AO</option><option value="At BO">At BO</option><option value="Delivered">Delivered</option></select></div></div>
+    <div style="display: flex; justify-content: flex-end; gap: 16px; margin-top: 24px;"><button class="btn btn-outline" onclick="closeLedgerEditModal()">Cancel</button><button class="btn btn-primary" onclick="saveEditedLedgerEntry()">Save Changes</button></div>
+  </div>
+</div>
+
+<div id="ledgerBulkEditModal" class="modal-overlay no-print">
+  <div class="modal-content" style="max-width: 680px;">
+    <h3 class="modal-title">Bulk Edit Selected Accounts</h3>
+    <p style="font-size:0.875rem; color:var(--text-muted); margin-bottom:20px;">Only fields changed below will be applied to <strong id="bulk-edit-count">0</strong> selected accounts.</p>
+    <div class="form-row">
+      <div class="input-group"><label>Date</label><input type="date" id="bulk-edit-date"></div>
+      <div class="input-group"><label>Scheme</label><select id="bulk-edit-scheme"><option value="">No change</option></select></div>
+      <div class="input-group"><label>Passbook Status</label><select id="bulk-edit-status"><option value="">No change</option><option value="N/A">N/A</option><option value="Pending AO">Pending AO</option><option value="At BO">At BO</option><option value="Delivered">Delivered</option></select></div>
+    </div>
+    <div class="form-row" style="margin-bottom:0;">
+      <div class="input-group" style="flex:2;"><label>Remarks Text</label><input type="text" id="bulk-edit-remarks" placeholder="Leave empty for no change"></div>
+      <div class="input-group"><label>Remarks Action</label><select id="bulk-edit-remarks-mode"><option value="append">Append</option><option value="replace">Replace</option></select></div>
+    </div>
+    <div class="modal-actions"><button class="btn btn-outline" onclick="closeBulkEditModal()">Cancel</button><button class="btn btn-primary" onclick="applyBulkLedgerEdit()">Apply Changes</button></div>
+  </div>
+</div>
+
+<div id="crmCampaignModal" class="modal-overlay no-print">
+  <div class="modal-content" style="max-width: 720px;">
+    <div class="crm-modal-heading">
+      <div><h3 class="modal-title" style="margin-bottom:4px;">Customer Connect CRM</h3><p>Prepare one message for the selected customer audience.</p></div>
+      <button class="btn btn-icon" type="button" onclick="closeCrmCampaign()" title="Close"><i data-lucide="x"></i></button>
+    </div>
+    <div class="crm-audience-card">
+      <div><strong id="crm-selected-count">0 customers</strong><span id="crm-phone-count">0 phone numbers available</span></div>
+      <div id="crm-audience-preview" class="crm-audience-preview"></div>
+    </div>
+    <div class="input-group" style="margin-bottom:16px;">
+      <label>Message Template</label>
+      <select id="crm-template" onchange="applyCrmTemplate(this.value)">
+        <option value="general">General Customer Update</option>
+        <option value="passbook">Passbook Ready Notice</option>
+        <option value="holiday">Branch Closure Notice</option>
+        <option value="custom">Custom Message</option>
+      </select>
+    </div>
+    <div class="input-group">
+      <label>Group Message</label>
+      <textarea id="crm-message" rows="7" maxlength="1500" placeholder="Write your message here..."></textarea>
+      <small class="crm-helper">Use <strong>{branch}</strong> to insert the branch name. WhatsApp will ask you to choose a group or contact before anything is sent.</small>
+    </div>
+    <div class="modal-actions" style="flex-wrap:wrap;">
+      <button class="btn btn-outline" type="button" onclick="exportSelectedCrmContacts()"><i data-lucide="contact"></i> Export Contacts</button>
+      <button class="btn btn-outline" type="button" onclick="copyCrmMessage()"><i data-lucide="copy"></i> Copy Message</button>
+      <button class="btn btn-success" type="button" onclick="shareCrmToWhatsApp()"><i data-lucide="message-circle"></i> Choose WhatsApp Group</button>
+    </div>
+  </div>
+</div>
+
+<aside class="sidebar" id="app-sidebar">
+  <div class="brand-header">
+    <h1><i data-lucide="mail"></i> <span class="nav-text">Dak Desk</span></h1>
+    <p id="heroEyebrow" class="nav-text">My Branch Office</p>
+  </div>
+  <nav class="nav-menu">
+    <button class="tab-btn active" onclick="switchTab('dashboard')" id="tab-dashboard" title="Branch Overview"><i data-lucide="layout-dashboard"></i> <span class="nav-text">Branch Overview</span></button>
+    <button class="tab-btn" onclick="switchTab('cashbook')" id="tab-cashbook" title="Treasury & BODA"><i data-lucide="book-open"></i> <span class="nav-text">Treasury & BODA</span></button>
+    <button class="tab-btn" onclick="switchTab('bill')" id="tab-bill" title="TD Incentive Billing"><i data-lucide="receipt"></i> <span class="nav-text">TD Incentive Billing</span></button>
+    <button class="tab-btn" onclick="switchTab('register')" id="tab-register" title="Customer Account Registry"><i data-lucide="users"></i> <span class="nav-text">Customer Account Registry</span></button>
+    <button class="tab-btn" onclick="switchTab('rates')" id="tab-rates" title="POSB Growth Planner"><i data-lucide="landmark"></i> <span class="nav-text">POSB Growth Planner</span></button>
+    <button class="tab-btn" onclick="switchTab('reports')" id="tab-reports" title="Insights Studio"><i data-lucide="bar-chart-3"></i> <span class="nav-text">Insights Studio</span></button>
+  </nav>
+  <div style="padding: 16px; border-top: 1px solid var(--border-sidebar);">
+    <button class="tab-btn" onclick="switchTab('settings')" id="tab-settings" title="Branch Settings & Backup"><i data-lucide="settings"></i> <span class="nav-text">Branch Settings & Backup</span></button>
+  </div>
+</aside>
+
+<main class="main-content">
+  <header class="topbar">
+    <div style="display: flex; align-items: center; gap: 16px;">
+      <button class="btn btn-icon" onclick="toggleSidebar()" title="Toggle Sidebar"><i data-lucide="menu"></i></button>
+      <div class="topbar-title" id="topbarTitle">Branch Overview</div>
+    </div>
+    <div class="top-controls">
+      <button class="btn btn-icon" onclick="toggleDark()" title="Toggle Dark Mode"><i data-lucide="moon"></i></button>
+    </div>
+  </header>
+
+  <div class="workspace" id="main-workspace">
+    
+    <!-- DASHBOARD -->
+    <div class="tab-panel active" id="tab-panel-dashboard">
+      <div class="dashboard-hero">
+        <div class="dashboard-hero-content">
+          <h2 style="font-size: 1.5rem; font-weight: 800; margin-bottom: 8px;">Welcome back to Dak Desk! 👋</h2>
+          <p style="opacity: 0.9; font-size: 0.875rem; margin-bottom: 12px;">Here is your branch summary for <strong id="dash-date-display">Today</strong>.</p>
+          <div id="dash-closure-message" class="dashboard-closure-message" role="status"></div>
+        </div>
+        <div class="dashboard-hero-content" style="background: rgba(0,0,0,0.2); padding: 12px 24px; border-radius: var(--radius-md); backdrop-filter: blur(8px); text-align: center;">
+          <span style="display: block; font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.8; margin-bottom: 4px;">Day Book Status</span>
+          <div style="display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 1rem;">
+            <div id="dash-status-indicator" style="width: 10px; height: 10px; border-radius: 50%; background: #facc15; box-shadow: 0 0 8px rgba(250, 204, 21, 0.6);"></div>
+            <span id="dash-status-text">Treasury Open</span>
+          </div>
+        </div>
+      </div>
+
+      <div style="display: flex; gap: 16px; margin-bottom: 24px; flex-wrap: wrap;">
+        <button class="quick-action-btn" id="dash-cash-action" onclick="switchTab('cashbook'); setTimeout(()=>document.getElementById('cb-rec-amt').focus(), 100);">
+            <div class="quick-action-icon" style="background: #eff6ff; color: #3b82f6;"><i data-lucide="plus"></i></div>
+            <span style="font-weight: 600; font-size: 0.875rem;">Record Cash Receipt</span>
+        </button>
+        <button class="quick-action-btn" onclick="switchTab('register'); setTimeout(()=>document.getElementById('regIdValue').focus(), 100);">
+            <div class="quick-action-icon" style="background: #fdf4ff; color: #a855f7;"><i data-lucide="users"></i></div>
+            <span style="font-weight: 600; font-size: 0.875rem;">Register New Account</span>
+        </button>
+        <button class="quick-action-btn" onclick="switchTab('bill');">
+            <div class="quick-action-icon" style="background: #fffbeb; color: #eab308;"><i data-lucide="receipt"></i></div>
+            <span style="font-weight: 600; font-size: 0.875rem;">Prepare TD Incentive Bill</span>
+        </button>
+        <button class="quick-action-btn" onclick="switchTab('reports');">
+            <div class="quick-action-icon" style="background: #ecfdf5; color: #10b981;"><i data-lucide="bar-chart-3"></i></div>
+            <span style="font-weight: 600; font-size: 0.875rem;">View Analytics & Reports</span>
+        </button>
+      </div>
+
+      <div class="stats-grid">
+        <div class="stat-card" style="flex-direction: column; gap: 0;">
+          <i data-lucide="wallet" class="stat-bg-icon"></i>
+          <div class="stat-card-title">Current Cash Balance</div>
+          <div class="stat-card-value" id="dashCashBalance">₹0.00</div>
+          <div class="stat-card-sub" id="dash-cash-balance-note">Calculated from today's Cash Book</div>
+        </div>
+        <div class="stat-card" style="flex-direction: column; gap: 0;">
+          <i data-lucide="users" class="stat-bg-icon"></i>
+          <div class="stat-card-title">Accounts Opened</div>
+          <div class="stat-card-value" id="dashAccCount">0</div>
+          <div class="stat-card-sub">Total recorded in Ledger</div>
+        </div>
+      </div>
+
+      <div class="split-layout">
+        <div class="card">
+          <div class="card-header"><h2 class="card-title"><i data-lucide="pie-chart"></i> Monthly Accounts Opened</h2></div>
+          <div style="height: 300px; position:relative;"><canvas id="chartSchemesMonthly"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h2 class="card-title"><i data-lucide="bar-chart-2"></i> Incentive Distribution</h2></div>
+          <div style="height: 300px; position:relative;"><canvas id="chartIncentive"></canvas></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- DAILY CASH BOOK -->
+    <div class="tab-panel" id="tab-panel-cashbook">
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title"><i data-lucide="book-open"></i> Cash Book & BODA</h2>
+          <div class="no-print" style="display:flex; gap:8px;">
+            <button class="btn btn-outline" onclick="openOverrideModal()">Manual Balance</button>
+            <button class="btn btn-outline" onclick="printBoda()"><i data-lucide="printer"></i> Print BO Slip</button>
+          </div>
+        </div>
+        
+        <div class="form-row" style="background: var(--bg-input); padding: 16px; border-radius: var(--radius-md); border: 1px solid var(--border);">
+          <div class="input-group" style="flex: 0 1 200px;">
+            <label>Select Date</label>
+            <input type="date" id="cb-main-date" onchange="window.checkSunday(this.value); loadCashBookDate()">
+          </div>
+          <div class="input-group" style="flex: 1;">
+            <label>BODA Remark (Optional)</label>
+            <input type="text" id="cb-boda-remark" placeholder="Add a specific remark for today's BO slip..." onchange="saveBodaRemark()">
+          </div>
+          <div id="cb-status-badge" style="padding:8px 16px; border-radius:20px; font-weight:700; font-size:0.75rem; letter-spacing:0.05em; margin-bottom:4px; flex-shrink: 0; align-self: center;"></div>
+        </div>
+
+        <div class="stats-grid" style="margin-top: 24px;">
+          <div class="stat-card" style="padding: 16px; flex-direction: column; gap: 0;">
+            <div class="stat-card-title">Opening Balance</div>
+            <div class="stat-card-value" id="cb-op-bal" style="font-size: 1.5rem;">₹0</div>
+          </div>
+          <div class="stat-card" style="padding: 16px; flex-direction: column; gap: 0;">
+            <div class="stat-card-title">Total Receipts (+)</div>
+            <div class="stat-card-value text-success" id="cb-tot-rec" style="font-size: 1.5rem;">₹0</div>
+          </div>
+          <div class="stat-card" style="padding: 16px; flex-direction: column; gap: 0;">
+            <div class="stat-card-title">Total Payments (-)</div>
+            <div class="stat-card-value text-danger" id="cb-tot-pay" style="font-size: 1.5rem;">₹0</div>
+          </div>
+          <div class="stat-card" style="padding: 16px; border-color: var(--brand-red); background: rgba(225, 29, 72, 0.03); flex-direction: column; gap: 0;">
+            <div class="stat-card-title" style="color: var(--brand-red);">Closing Balance</div>
+            <div class="stat-card-value" id="cb-cur-bal" style="font-size: 1.5rem; color: var(--brand-red);">₹0</div>
+          </div>
+        </div>
+
+        <div class="no-print" style="margin-bottom:24px; display:flex; gap:12px;">
+           <button class="btn btn-success" id="btn-save-cb" onclick="saveCashBookDate()"><i data-lucide="lock"></i> Save & Close Treasury</button>
+           <button class="btn btn-outline" id="btn-modify-cb" onclick="modifyCashBookDate()" style="display:none;"><i data-lucide="unlock"></i> Re-open Treasury</button>
+        </div>
+
+        <div class="split-layout no-print" id="cb-forms-container" style="margin-bottom: 24px;">
+          <div class="card" style="margin:0; box-shadow:none; background: var(--bg-input); display: flex; flex-direction: column; justify-content: space-between;">
+            <div>
+                <h3 style="font-size: 1rem; font-weight: 600; margin-bottom: 16px; color: var(--success);">+ Add Receipt (Credit)</h3>
+                <div class="form-row"><div class="input-group"><select id="cb-rec-scheme"></select></div><div class="input-group" style="flex:2"><input type="text" id="cb-rec-desc" placeholder="Details/Description... (Optional)"></div></div>
+            </div>
+            <div class="form-row" style="margin-bottom: 0;">
+              <div class="input-group"><input type="number" id="cb-rec-amt" placeholder="Amount (₹)" min="1"></div>
+              <button class="btn btn-success" onclick="addCashBookEntry('receipt')" style="height:42px;">Add Receipt</button>
+            </div>
+          </div>
+          <div class="card" style="margin:0; box-shadow:none; background: var(--bg-input); display: flex; flex-direction: column; justify-content: space-between;">
+            <div>
+                <h3 style="font-size: 1rem; font-weight: 600; margin-bottom: 16px; color: var(--danger);">- Add Payment (Debit)</h3>
+                <div class="form-row"><div class="input-group"><select id="cb-pay-scheme"></select></div><div class="input-group" style="flex:2"><input type="text" id="cb-pay-desc" placeholder="Details/Description... (Optional)"></div></div>
+            </div>
+            <div class="form-row" style="margin-bottom: 0;">
+              <div class="input-group"><input type="number" id="cb-pay-amt" placeholder="Amount (₹)" min="1"></div>
+              <button class="btn btn-danger" onclick="addCashBookEntry('payment')" style="color:white; background:var(--danger); height:42px;">Add Payment</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="table-container">
+          <table id="cbTable">
+            <thead><tr><th>Description</th><th class="text-right">Receipts (+)</th><th class="text-right">Payments (-)</th><th class="text-right">Running Balance</th><th class="no-print"></th></tr></thead>
+            <tbody id="cb-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+      
+      <!-- INTEGRATED CASH TALLY SECTION -->
+      <div id="tally-section" style="margin-top: 48px; padding-top: 32px; border-top: 2px dashed var(--border);">
+        <div class="split-30-70">
+          <div class="card" style="margin-bottom: 0; order: 2;">
+            <div class="card-header"><h2 class="card-title"><i data-lucide="banknote"></i> Physical Cash Tally</h2></div>
+            <div class="form-row no-print"><div class="input-group"><label>Tally Name (Optional)</label><input type="text" id="cash-tally-name" placeholder="e.g. Evening Tally"></div></div>
+            <div style="background:var(--bg-input); border:1px solid var(--border); border-radius:var(--radius-md); padding:16px; margin-bottom:24px; display:flex; justify-content:space-between; align-items:center;">
+               <div><span style="font-size:0.75rem; font-weight:600; color:var(--text-muted); text-transform:uppercase; display:block;">Cash Book Closing Balance for <span id="tally-link-date" style="color:var(--brand-red);"></span></span><span id="tally-link-bal" style="font-size:1.5rem; color:var(--text-main); font-weight:800;">₹0</span></div>
+               <div id="tally-link-status" style="font-size:0.75rem; font-weight:700; padding:6px 12px; border-radius:20px;">Checking status...</div>
+            </div>
+            <div id="cash-inputs-grid" class="cash-grid"></div>
+            <div style="background: var(--bg-card); border: 2px solid var(--brand-red); border-radius: var(--radius-lg); padding: 20px; display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; box-shadow: var(--shadow-md);">
+               <div style="font-weight:700; font-size:1.125rem;">Total Physical Cash</div>
+               <div id="cash-total-val-td" style="font-weight:800; font-size:1.75rem; color:var(--brand-red);">₹0</div>
+            </div>
+            <div style="text-align:center; margin-bottom:24px;">
+                <div id="tally-diff" style="font-weight:700; font-size:1rem; margin-bottom: 8px;"></div>
+                <div style="font-weight:600; font-size:0.875rem; color:var(--text-muted); margin-bottom: 12px;" id="cash-words-val">Zero Rupees Only</div>
+            </div>
+            <div class="no-print" style="display:flex; gap:12px; flex-wrap:wrap;">
+              <button class="btn btn-primary" id="btn-save-tally" onclick="saveCashTally()" style="flex:1;"><i data-lucide="save"></i> Lock Day & Save Tally</button>
+              <button class="btn btn-outline" onclick="clearCashTally()"><i data-lucide="refresh-cw"></i> Reset</button>
+              <button class="btn btn-danger" id="btn-delete-tally" style="display:none; width:100%; margin-top:8px;" onclick="deleteLoadedTally()">Delete Tally (Unlock Day)</button>
+            </div>
+          </div>
+          <div class="card" style="margin-bottom: 0; order: 1;">
+            <div class="card-header"><h2 class="card-title"><i data-lucide="history"></i> Saved Tallies</h2></div>
+            <div id="cashHistoryList" style="display:flex; flex-direction:column; gap:8px;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TD COMMISSION BILL -->
+    <div class="tab-panel" id="tab-panel-bill">
+      <div class="stats-grid">
+        <div class="stat-card" style="flex-direction: column; gap: 0;"><div class="stat-card-title">Total Entries</div><div class="stat-card-value" id="sum-entries">0</div></div>
+        <div class="stat-card" style="border-color: var(--success); background: rgba(16, 185, 129, 0.02); flex-direction: column; gap: 0;"><div class="stat-card-title" style="color: var(--success);">Total Incentive</div><div class="stat-card-value" id="sum-incentive" style="color: var(--success);">₹0</div></div>
+        <div class="stat-card" style="flex-direction: column; gap: 0;"><div class="stat-card-title">Total Deposit</div><div class="stat-card-value" id="sum-deposit">₹0</div></div>
+        <div class="stat-card" style="flex-direction: column; gap: 0;"><div class="stat-card-title">Avg. Incentive</div><div class="stat-card-value" id="sum-avg">₹0</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header" style="border-bottom: 1px solid var(--border); padding-bottom: 16px; margin-bottom: 24px;">
+          <h2 class="card-title"><i data-lucide="receipt"></i> TD Incentive Bill Entry</h2>
+          <div class="no-print" style="display:flex; gap:8px;">
+            <button class="btn btn-success" onclick="syncTdFromLedger()"><i data-lucide="refresh-ccw"></i> Sync Ledger</button>
+            <button class="btn btn-outline" onclick="exportModulePDF('printable-area-wrap', 'TD_Commission_Bill')"><i data-lucide="file-text"></i> PDF</button>
+            <button class="btn btn-outline" onclick="exportExcelTable('tdBillTable', 'TD_Bill')"><i data-lucide="sheet"></i> Excel</button>
+            <button class="btn btn-outline" onclick="printBill()"><i data-lucide="printer"></i> Print</button>
+            <button class="btn btn-outline" onclick="openNewBillModal()"><i data-lucide="file-plus"></i> New Bill</button>
+            <button class="btn btn-icon" onclick="clearTable()" title="Clear All"><i data-lucide="trash-2"></i></button>
+          </div>
+        </div>
+        
+        <div class="form-row" style="background: var(--bg-input); padding: 16px; border-radius: var(--radius-md); border: 1px solid var(--border); margin-bottom: 24px;">
+          <div class="input-group"><label>Bill Month</label><input type="month" id="billMonth" onchange="updateHeaders()"></div>
+          <div class="input-group"><label>Name of BPM</label><input type="text" id="bpmName" oninput="updateHeaders()"></div>
+          <div class="input-group"><label>SB A/c No.</label><input type="text" id="bpmAcc" oninput="updateHeaders()"></div>
+          <div class="input-group"><label>Date of Bill</label><input type="date" id="billDate" onchange="window.checkSunday(this.value); updateHeaders()"></div>
+          <div class="input-group"><label>SPO</label><input type="text" id="spoName" oninput="updateHeaders()"></div>
+          <div class="input-group"><label>HO</label><input type="text" id="hoName" oninput="updateHeaders()"></div>
+        </div>
+
+        <div class="form-row">
+          <div class="input-group"><label>Account Number</label><input type="text" id="accNo" placeholder="9 or 12 Digits" maxlength="12" oninput="this.value = this.value.replace(/[^0-9]/g, ''); checkDuplicate();"></div>
+          <div class="input-group"><label>Depositor Name</label><input type="text" id="depName"></div>
+          <div class="input-group" style="flex: 0 1 80px;"><label>PR No.</label><input type="number" id="prNo"></div>
+          <div class="input-group"><label>Deposit (₹)</label><input type="number" id="depAmount" step="100" min="1000"></div>
+          <div class="input-group"><label>Term</label><select id="tdTerm"><option value="1">1 Year (0.5%)</option><option value="2">2 Year (1.0%)</option><option value="3">3 Year (1.0%)</option><option value="5">5 Year (2.0%)</option></select></div>
+          <button class="btn btn-primary" onclick="requestAddEntry()">+ Add Entry</button>
+        </div>
+        <div id="dupWarning" style="display:none; color: var(--danger); font-size: 0.875rem; font-weight: 600; margin-bottom: 16px;">⚠️ This account number already exists in the bill.</div>
+        
+        <div style="display:flex; justify-content:space-between; align-items:center; background:var(--bg-input); padding:12px 16px; border-radius:var(--radius-md); font-size:0.875rem; border:1px solid var(--border);">
+          <div>Live Preview: Deposit ₹<span id="previewAmount" style="font-weight:600;">0</span> for <span id="previewTerm" style="font-weight:600;">1</span> Yr at <span id="previewPercent" style="font-weight:600;">0.0</span>% = <strong style="color:var(--success);">₹<span id="previewIncentive">0</span> Incentive</strong></div>
+          <div style="display:flex; gap:16px;"><span>Next PR: <strong id="rt-nextPr">--</strong></span><span>Est. New Total: <strong id="rt-newTotal">₹0</strong></span></div>
+        </div>
+      </div>
+
+      <div class="card" id="printable-area-wrap">
+        <div class="card-header no-print">
+          <div class="input-group" style="max-width: 300px;"><input type="text" id="searchInput" placeholder="🔍 Search entries..." oninput="renderTable()" style="background:var(--bg-app);"></div>
+          <span id="entryCount" style="font-size:0.875rem; color:var(--text-muted); font-weight:600;">0 entries</span>
+        </div>
+        <div id="printable-area">
+          <div class="print-header"><h2>Department of Posts, India</h2><h3>TD Commission for BPM Incentive Bill – <span id="out-billMonth">__________</span></h3></div>
+          <div class="header-info">
+            <div class="date-right">Dated: <span id="out-billDate">__________</span></div>
+            <table style="margin: 0 auto; text-align: left; font-size: 13px; border: none; width: auto; color: #000; border-collapse: collapse;">
+              <tr><td style="padding: 2px 10px 2px 0; border: none !important;">Name of BO</td><td style="padding: 2px 0; border: none !important;">: <span id="out-boName">--</span><span id="out-spoNameWrapper"></span></td></tr>
+              <tr><td style="padding: 2px 10px 2px 0; border: none !important;">Name of BPM</td><td style="padding: 2px 0; border: none !important;">: <span id="out-bpmName">--</span></td></tr>
+              <tr><td style="padding: 2px 10px 2px 0; border: none !important;">SB A/c No.</td><td style="padding: 2px 0; border: none !important;">: <span id="out-bpmAcc">--</span></td></tr>
+            </table>
+          </div>
+          <table id="tdBillTable">
+            <thead><tr><th style="width:5%">Sr.<br>No.</th><th style="width:16%">Account Number</th><th style="width:22%">Name Of<br>Depositor</th><th style="width:7%">PR<br>No.</th><th style="width:14%">Deposit<br>Amount</th><th style="width:8%">Term of<br>Deposit</th><th style="width:8%">% of<br>Incentive</th><th style="width:13%">Incentive<br>Amount</th><th class="no-print">Actions</th></tr></thead>
+            <tbody id="tableBody"></tbody>
+            <tfoot><tr class="total-row"><td colspan="4" style="border-right: none !important;"></td><td id="out-totalDep" style="border-left: none !important; border-right: none !important;">0</td><td colspan="2" style="border-left: none !important; border-right: none !important;"></td><td id="out-totalInc" style="border-left: none !important;">0</td><td class="no-print"></td></tr></tfoot>
+          </table>
+          <div class="certifications">
+            <p><strong>Certified</strong> that all the above-mentioned accounts were opened at the Branch Office and not through any SAS agents.</p>
+            <p><strong>Certified</strong> that the incentive for the above-mentioned accounts has not been taken earlier.</p>
+            <table style="width: 100%; border-collapse: collapse; border: none; margin-top: 15px;">
+              <tr><td style="text-align: left; vertical-align: top; width: 60%; border: none !important; padding: 0;">Please give the acceptance of the incentive amount of <strong>₹<span class="dynamic-text" id="out-incNum1">0</span></strong><br>(Rupees <em style="text-transform: capitalize;"><span id="out-incWords1">zero</span></em> only).</td><td style="text-align: center; vertical-align: bottom; width: 40%; border: none !important; padding: 0 0 10px 0;"><div class="signature-block" style="margin: 0 auto;"><span>Signature of BPM</span></div></td></tr>
+              <tr><td style="text-align: left; vertical-align: top; border: none !important; padding: 25px 0 0 0;"><strong>Acceptance granted for the amount of ₹<span class="dynamic-text" id="out-incNum2">0</span></strong><br>(Rupees <em style="text-transform: capitalize;"><span id="out-incWords2">zero</span></em> only).<br><br><strong>Incentive amount of ₹.................. Received</strong><br>(Rupees..........................................................only)</td><td style="text-align: center; vertical-align: bottom; border: none !important; padding: 25px 0 0 0;"><div class="signature-block" style="margin: 0 auto 30px auto;"><span>Signature of SPM</span></div><div style="font-weight: bold; font-size: 12px;">Signature of BPM</div></td></tr>
+              <tr><td style="text-align: left; vertical-align: bottom; border: none !important; padding: 40px 0 0 20px;"><div style="font-weight: bold; font-size: 12px;">B.O. Date Stamp.</div></td><td style="border: none !important;"></td></tr>
+            </table>
+          </div>
+          <div class="bill-footer"><span>Generated on: <strong id="footerDateTime">--</strong></span><span>Page <strong>1/1</strong></span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><h2 class="card-title"><i data-lucide="folder-clock"></i> Bill History</h2></div>
+        <div id="historyList" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px;"></div>
+      </div>
+    </div>
+
+    <!-- SMART LEDGER -->
+    <div class="tab-panel" id="tab-panel-register">
+      <div class="print-only"><h2>Branch Office Account Opening Register</h2><p style="color: #555;">Generated on: <span id="printDate"></span></p></div>
+
+      <!-- DASHBOARD STATS -->
+      <div class="stats-grid no-print" style="margin-bottom: 24px;">
+        <div class="stat-card"><div class="stat-icon-wrap" style="background: #eff6ff; color: #2563eb;"><i data-lucide="users" style="width:24px; height:24px;"></i></div><div class="stat-content"><div class="stat-card-title">Total Accounts</div><div class="stat-card-value" id="stat-acc">0</div><div class="stat-card-sub" id="stat-acc-month">0 this month</div></div></div>
+        <div class="stat-card"><div class="stat-icon-wrap" style="background: #ecfdf5; color: #10b981;"><i data-lucide="wallet" style="width:24px; height:24px;"></i></div><div class="stat-content"><div class="stat-card-title">Total Deposits</div><div class="stat-card-value" id="stat-dep">₹0</div><div class="stat-card-sub" id="stat-dep-month">₹0 this month</div></div></div>
+        <div class="stat-card"><div class="stat-icon-wrap" style="background: #fffbeb; color: #f59e0b;"><i data-lucide="clock" style="width:24px; height:24px;"></i></div><div class="stat-content"><div class="stat-card-title">Passbooks Pending</div><div class="stat-card-value" id="stat-pb">0</div><div class="stat-card-sub">Awaiting from AO</div></div></div>
+      </div>
+
+      <!-- ENTRY FORM -->
+      <div class="card no-print">
+        <div class="card-header" style="margin-bottom: 16px;">
+          <h2 class="card-title"><div style="background: #fef2f2; padding: 10px; border-radius: 12px; display: flex;"><i data-lucide="user-plus" style="color: var(--brand-red);"></i></div>Open New Account</h2>
+          <div style="background: var(--text-main); color: white; padding: 6px 14px; border-radius: 99px; font-size: 0.8rem; font-weight: 600; letter-spacing: 0.03em;">Branch Office Mode</div>
+        </div>
+        
+        <div style="background: var(--bg-input); padding: 24px; border-radius: var(--radius-lg); border: 1px solid var(--border);">
+          <div class="form-row">
+            <div class="input-group" style="max-width: 180px;"><label>Date</label><input type="date" id="regDate" onchange="window.checkSunday(this.value)" style="background: #fff;"></div>
+            <div class="input-group" style="max-width: 120px;"><label>PR (1-50)</label><input type="number" id="regPr" min="1" max="50" placeholder="Auto" style="background: #fff;"></div>
+            <div class="input-group"><label>Scheme</label><select id="regScheme" style="background: #fff;"></select></div>
+            <div class="input-group"><label>Deposit Amount (₹)</label><input type="number" id="regAmount" placeholder="0" style="background: #fff; font-weight: 700;"></div>
+          </div>
+
+          <div class="form-row" style="margin-bottom: 24px;">
+            <div class="input-group" style="flex: 1; min-width: 250px;">
+              <label>Customer ID / Pre-fill Search</label>
+              <div class="composite-input" style="background: #fff;">
+                  <select id="regIdType" onchange="swapRegIdMode()" style="max-width: 105px; padding-left: 8px; font-size: 0.8rem;">
+                      <option value="acc">A/C No</option><option value="cif">CIF</option><option value="phone">Phone</option><option value="aadhaar">Aadhaar</option><option value="pan">PAN</option>
+                  </select>
+                  <input type="text" id="regIdValue" oninput="handleRegIdInput()" placeholder="12 Digits" style="width: 100%;">
+              </div>
+              <div id="regIdBadges" style="display:flex; flex-wrap: wrap; gap:6px; min-height:24px; align-items: center; margin-top: 4px;"></div>
+            </div>
+            <div class="input-group" style="flex: 1; min-width: 250px; align-self: flex-start;">
+              <label>Customer Full Name</label>
+              <input type="text" id="regName" placeholder="Enter full name" style="background: #fff;">
+            </div>
+          </div>
+
+          <div class="form-row" style="margin-bottom: 0;">
+            <div class="input-group" style="flex:1"><label>Remarks (Nominee / Extra details)</label><input type="text" id="regRemarks" placeholder="Optional details..." style="background: #fff;"></div>
+            <button class="btn btn-primary" onclick="addRegEntry()" style="padding: 12px 24px; font-size: 0.95rem; height:42px;"><i data-lucide="plus"></i> Log Account</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- LEDGER TABLE -->
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title no-print"><div style="background: #eff6ff; padding: 10px; border-radius: 12px; display: flex;"><i data-lucide="book-open" style="color: var(--blue);"></i></div>Account Opening Register</h2>
+          <div class="no-print" style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+            <div style="display: flex; align-items: center; background: var(--bg-input); border: 1px solid var(--border); padding: 4px 16px; border-radius: 99px; min-width: 260px; transition: all 0.2s ease;">
+                <i data-lucide="search" style="width: 18px; height: 18px; color: var(--text-muted);"></i>
+                <input type="text" id="ledgerSearchInput" placeholder="Search accounts, PAN... (Ctrl+F)" style="border: none; background: transparent; padding: 8px 12px; flex: 1; outline: none; box-shadow: none;" oninput="renderRegTable()">
+            </div>
+            <select id="ledgerStatusFilter" style="padding: 10px 16px; font-weight: 600; border-radius: 99px; background: var(--bg-input); border: 1px solid var(--border);" onchange="renderRegTable()"><option value="All">All Statuses</option><option value="Pending AO">Pending AO</option><option value="At BO">At BO</option><option value="Delivered">Delivered</option></select>
+            <div style="width: 1px; height: 24px; background: var(--border); margin: 0 4px;"></div>
+            <button class="btn btn-outline" onclick="exportLedgerExcel()" style="border-radius: 99px; height:42px;"><i data-lucide="file-spreadsheet"></i> Export</button>
+            <button class="btn btn-outline" onclick="printLedger()" style="border-radius: 99px; height:42px;"><i data-lucide="printer"></i> Print</button>
+          </div>
+        </div>
+
+        <div class="ledger-bulk-toolbar no-print">
+          <div class="ledger-selection-summary"><strong id="ledger-selected-count">0 selected</strong><span>Select accounts below to use bulk actions.</span></div>
+          <div class="ledger-bulk-actions">
+            <button class="btn btn-outline" id="bulk-edit-btn" onclick="openBulkEditModal()" disabled><i data-lucide="list-pen"></i> Bulk Edit</button>
+            <button class="btn btn-outline" id="bulk-receipt-btn" onclick="generateBulkReceipts()" disabled><i data-lucide="files"></i> Bulk Receipts</button>
+            <button class="btn btn-primary" id="crm-campaign-btn" onclick="openCrmCampaign()" disabled><i data-lucide="messages-square"></i> Customer Connect</button>
+            <button class="btn btn-outline" onclick="downloadLedgerImportTemplate()"><i data-lucide="download"></i> Import Template</button>
+            <input type="file" id="ledgerBulkFileInput" accept=".csv,.xlsx,.xls" class="hidden" onchange="importLedgerBulkFile(event)">
+            <button class="btn btn-success" onclick="document.getElementById('ledgerBulkFileInput').click()"><i data-lucide="upload"></i> Upload CSV/XLSX</button>
+            <button class="btn btn-icon" id="clear-ledger-selection-btn" onclick="clearLedgerSelection()" disabled title="Clear selection"><i data-lucide="x"></i></button>
+          </div>
+        </div>
+        
+        <div class="table-container">
+          <table id="regTable">
+            <thead><tr><th class="no-print ledger-select-cell"><input type="checkbox" id="ledger-select-all" onchange="toggleSelectAllLedger(this.checked)" aria-label="Select all visible accounts"></th><th style="width: 60px;">Sr.</th><th style="width: 120px;">Date</th><th>Account IDs</th><th>Customer Details</th><th style="width: 80px;">PR</th><th>Scheme</th><th class="text-right">Deposit (₹)</th><th class="text-center" style="width: 160px;">Passbook Status</th><th class="text-right no-print" style="width: 160px;">Actions</th></tr></thead>
+            <tbody id="regBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- POSB SCHEMES CALCULATOR -->
+    <div class="tab-panel" id="tab-panel-rates">
+      <div class="card" style="background: linear-gradient(180deg, var(--bg-card) 0%, rgba(59, 130, 246, 0.03) 100%);">
+        <div class="card-header" style="border-bottom: 1px solid var(--border); padding-bottom: 16px; margin-bottom: 24px;">
+          <h2 class="card-title"><i data-lucide="calculator" class="text-blue-600"></i> POSB Savings Returns Calculator</h2>
+          <p style="font-size:0.875rem; color:var(--text-muted); font-weight:500;">Visualize savings growth with compound interest across India Post schemes.</p>
+        </div>
+
+        <div class="split-30-70">
+          <!-- Left: Controls -->
+          <div style="background: var(--bg-card); padding: 24px; border-radius: var(--radius-lg); border: 1px solid var(--border); box-shadow: var(--shadow-sm);">
+            <div id="posb-scheme-banner" style="background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 12px; margin-bottom: 20px; font-size: 0.875rem; color: #1e3a8a; display: flex; gap: 12px; align-items: flex-start;">
+              <i data-lucide="info" style="width: 16px; height: 16px; flex-shrink: 0; margin-top: 2px;"></i>
+              <div>
+                <div><span id="posb-active-label" style="font-weight:700;">Custom</span>: <span id="posb-active-desc">Compounded Monthly</span></div>
+                <div id="posb-warn-lump" style="font-size: 0.75rem; color: #2563eb; opacity: 0.8; font-style: italic; display: none;">Lump sum disabled for this scheme.</div>
+                <div id="posb-warn-sip" style="font-size: 0.75rem; color: #2563eb; opacity: 0.8; font-style: italic; display: none;">Monthly deposits disabled for this scheme.</div>
+              </div>
+            </div>
+
+            <div id="posb-wrap-init" style="margin-bottom: 20px; transition: opacity 0.3s;">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 8px;"><label style="font-size:0.875rem; font-weight:600; color:var(--text-muted);">Initial Deposit</label><div style="background:var(--bg-input); border-radius:6px; padding:4px 8px; display:flex; align-items:center; border:1px solid var(--border);"><span style="font-size:0.875rem; color:var(--text-muted); margin-right:4px;">₹</span><input type="number" id="posb-init" value="10000" style="background:transparent; border:none; padding:0; width:80px; text-align:right; font-weight:700; color:var(--text-main); font-size:1rem; box-shadow:none; height:auto;" oninput="updatePosbCalculator()"></div></div>
+              <input type="range" id="posb-init-slider" min="0" max="500000" step="5000" value="10000" oninput="document.getElementById('posb-init').value=this.value; updatePosbCalculator();">
+            </div>
+
+            <div id="posb-wrap-sip" style="margin-bottom: 20px; transition: opacity 0.3s;">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 8px;"><label style="font-size:0.875rem; font-weight:600; color:var(--text-muted);">Monthly SIP</label><div style="background:var(--bg-input); border-radius:6px; padding:4px 8px; display:flex; align-items:center; border:1px solid var(--border);"><span style="font-size:0.875rem; color:var(--text-muted); margin-right:4px;">₹</span><input type="number" id="posb-sip" value="2000" style="background:transparent; border:none; padding:0; width:80px; text-align:right; font-weight:700; color:var(--text-main); font-size:1rem; box-shadow:none; height:auto;" oninput="updatePosbCalculator()"></div></div>
+              <input type="range" id="posb-sip-slider" min="0" max="100000" step="500" value="2000" oninput="document.getElementById('posb-sip').value=this.value; updatePosbCalculator();">
+            </div>
+
+            <div style="margin-bottom: 20px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 8px;"><label style="font-size:0.875rem; font-weight:600; color:var(--text-muted);">Interest Rate</label><div style="background:var(--bg-input); border-radius:6px; padding:4px 8px; display:flex; align-items:center; border:1px solid var(--border);"><input type="number" id="posb-rate" step="0.1" value="4.0" style="background:transparent; border:none; padding:0; width:50px; text-align:right; font-weight:700; color:var(--text-main); font-size:1rem; box-shadow:none; height:auto;" oninput="setPosbCustom(); updatePosbCalculator();"><span style="font-size:0.875rem; color:var(--text-muted); margin-left:4px;">%</span></div></div>
+              <input type="range" id="posb-rate-slider" min="1" max="15" step="0.1" value="4.0" oninput="document.getElementById('posb-rate').value=this.value; setPosbCustom(); updatePosbCalculator();">
+              <div id="posb-presets" style="display:flex; flex-wrap:wrap; gap:8px; margin-top:12px;"></div>
+            </div>
+
+            <div style="margin-bottom: 0;">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 8px;"><label style="font-size:0.875rem; font-weight:600; color:var(--text-muted);">Time Period</label><div style="background:var(--bg-input); border-radius:6px; padding:4px 8px; display:flex; align-items:center; border:1px solid var(--border);"><i data-lucide="calendar" style="width:14px; height:14px; color:var(--text-muted); margin-right:6px;"></i><input type="number" id="posb-years" value="10" min="1" max="50" style="background:transparent; border:none; padding:0; width:40px; text-align:right; font-weight:700; color:var(--text-main); font-size:1rem; box-shadow:none; height:auto;" oninput="updatePosbCalculator()"><span style="font-size:0.875rem; color:var(--text-muted); margin-left:4px;">Yrs</span></div></div>
+              <input type="range" id="posb-years-slider" min="1" max="30" step="1" value="10" oninput="document.getElementById('posb-years').value=this.value; updatePosbCalculator();">
+            </div>
+          </div>
+
+          <!-- Right: Visuals -->
+          <div style="display: flex; flex-direction: column; gap: 20px;">
+            <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap: 16px;">
+              <div style="background:var(--bg-card); padding:16px; border-radius:var(--radius-lg); border:1px solid var(--border); box-shadow:var(--shadow-sm);"><div style="font-size:0.75rem; font-weight:600; color:var(--text-muted); display:flex; align-items:center; gap:6px; margin-bottom:8px;"><i data-lucide="piggy-bank" style="width:16px; height:16px;"></i> Total Invested</div><div id="posb-val-invested" style="font-size:1.5rem; font-weight:800; color:var(--text-main);">₹0</div></div>
+              <div style="background:#eff6ff; padding:16px; border-radius:var(--radius-lg); border:1px solid #bfdbfe; box-shadow:var(--shadow-sm);"><div style="font-size:0.75rem; font-weight:600; color:#2563eb; display:flex; align-items:center; gap:6px; margin-bottom:8px;"><i data-lucide="trending-up" style="width:16px; height:16px;"></i> Est. Returns</div><div id="posb-val-returns" style="font-size:1.5rem; font-weight:800; color:#1d4ed8;">+₹0</div></div>
+              <div style="background:#ecfdf5; padding:16px; border-radius:var(--radius-lg); border:1px solid #a7f3d0; box-shadow:var(--shadow-sm);"><div style="font-size:0.75rem; font-weight:600; color:#059669; display:flex; align-items:center; gap:6px; margin-bottom:8px;"><i data-lucide="landmark" style="width:16px; height:16px;"></i> Total Value</div><div id="posb-val-total" style="font-size:1.5rem; font-weight:800; color:#047857;">₹0</div></div>
+            </div>
+
+            <div style="background:var(--bg-card); padding:24px; border-radius:var(--radius-lg); border:1px solid var(--border); box-shadow:var(--shadow-sm); flex-grow: 1; display:flex; flex-direction:column;">
+              <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:24px;"><h3 style="font-size:1rem; font-weight:700; color:var(--text-main); margin:0;">Wealth Projection</h3><button class="btn btn-success" style="padding:6px 12px; font-size:0.75rem; height:auto;" onclick="sharePosbWA()"><i data-lucide="message-circle" style="width:14px; height:14px;"></i> Share Estimate</button></div>
+              <div style="position:relative; height:220px; display:flex; align-items:flex-end; justify-content:space-between; gap:4px; margin-top:auto;" id="posb-chart-container"></div>
+              <div style="display:flex; justify-content:center; gap:24px; margin-top:32px; font-size:0.75rem; font-weight:600; color:var(--text-muted);"><div style="display:flex; align-items:center; gap:8px;"><div style="width:12px; height:12px; border-radius:3px; background:var(--blue);"></div> Amount Invested</div><div style="display:flex; align-items:center; gap:8px;"><div style="width:12px; height:12px; border-radius:3px; background:var(--success);"></div> Interest Earned</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Offical Rates Table -->
+      <div class="card">
+        <div class="card-header"><h2 class="card-title"><i data-lucide="landmark"></i> Official Post Office Interest Rates</h2><button class="btn btn-outline no-print" onclick="printRates()"><i data-lucide="printer"></i> Print Rates</button></div>
+        <div id="rate-card-print">
+          <div class="print-only" style="text-align:center; margin-bottom:20px;"><h2>India Post Schemes</h2><h3>Official Interest Rates</h3></div>
+          <div class="table-container">
+            <table id="rateTable">
+              <thead><tr><th>Scheme Name</th><th>Type</th><th class="text-right">Rate</th><th>Compounding / Payout</th><th class="text-right">Maturity</th></tr></thead>
+              <tbody>
+                <tr><td>1 Year Time Deposit (1Y TD)</td><td>Payout</td><td class="text-right text-success">6.9%</td><td>Quarterly Compounding</td><td class="text-right">1 Year</td></tr>
+                <tr><td>2 Year Time Deposit (2Y TD)</td><td>Payout</td><td class="text-right text-success">7.0%</td><td>Quarterly Compounding</td><td class="text-right">2 Years</td></tr>
+                <tr><td>3 Year Time Deposit (3Y TD)</td><td>Payout</td><td class="text-right text-success">7.1%</td><td>Quarterly Compounding</td><td class="text-right">3 Years</td></tr>
+                <tr><td>5 Year Time Deposit (5Y TD)</td><td>Payout</td><td class="text-right text-success">7.5%</td><td>Quarterly Compounding</td><td class="text-right">5 Years</td></tr>
+                <tr><td>Recurring Deposit (RD)</td><td>Monthly</td><td class="text-right text-success">6.7%</td><td>Quarterly Compounding</td><td class="text-right">5 Years</td></tr>
+                <tr><td>Monthly Income Scheme (MIS)</td><td>Payout</td><td class="text-right text-success">7.4%</td><td>Monthly Interest Payout</td><td class="text-right">5 Years</td></tr>
+                <tr><td>Senior Citizens Savings Scheme (SCSS)</td><td>Payout</td><td class="text-right text-success">8.2%</td><td>Quarterly Interest Payout</td><td class="text-right">5 Years</td></tr>
+                <tr><td>Public Provident Fund (PPF)</td><td>Yearly</td><td class="text-right text-success">7.1%</td><td>Yearly Compounding</td><td class="text-right">15 Years</td></tr>
+                <tr><td>Sukanya Samriddhi Account (SSA)</td><td>Yearly</td><td class="text-right text-success">8.2%</td><td>Yearly Compounding</td><td class="text-right">21 Years</td></tr>
+                <tr><td>Savings Bank (SB)</td><td>Savings</td><td class="text-right text-success">4.0%</td><td>Quarterly Interest Credit</td><td class="text-right">N/A</td></tr>
+                <tr><td>National Savings Certificate (NSC)</td><td>Accumulation</td><td class="text-right text-success">7.7%</td><td>Yearly Compounding</td><td class="text-right">5 Years</td></tr>
+                <tr><td>Kisan Vikas Patra (KVP)</td><td>Accumulation</td><td class="text-right text-success">7.5%</td><td>Compounded Annually</td><td class="text-right">115 Months</td></tr>
+                <tr><td>Mahila Samman Savings Certificate (MSSC)</td><td>Accumulation</td><td class="text-right text-success">7.5%</td><td>Quarterly Compounding</td><td class="text-right">2 Years</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- REPORTS & SUMMARY -->
+    <div class="tab-panel" id="tab-panel-reports">
+      <div style="display: flex; gap: 16px; margin-bottom: 24px; flex-wrap: wrap;">
+        <button class="quick-action-btn" onclick="showReportSection('analytics')"><div class="quick-action-icon" style="background: #eff6ff; color: #3b82f6;"><i data-lucide="bar-chart-2"></i></div><span style="font-weight: 600; font-size: 0.875rem;">Branch Analytics</span></button>
+        <button class="quick-action-btn" onclick="showReportSection('bosummary')"><div class="quick-action-icon" style="background: #fdf4ff; color: #a855f7;"><i data-lucide="book-open"></i></div><span style="font-weight: 600; font-size: 0.875rem;">BO Summary Reports</span></button>
+        <button class="quick-action-btn" onclick="showReportSection('accounts')"><div class="quick-action-icon" style="background: #ecfdf5; color: #10b981;"><i data-lucide="users"></i></div><span style="font-weight: 600; font-size: 0.875rem;">Account Summary Reports</span></button>
+      </div>
+
+      <div id="rep-section-analytics">
+        <div class="card">
+          <div class="card-header"><h2 class="card-title"><i data-lucide="bar-chart-3"></i> Branch Analytics</h2></div>
+          <div class="form-row no-print" style="background: var(--bg-input); padding: 16px; border-radius: var(--radius-md); border: 1px solid var(--border); margin-bottom: 24px;">
+            <div class="input-group"><label>From Date</label><input type="date" id="rep-start"></div>
+            <div class="input-group"><label>To Date</label><input type="date" id="rep-end"></div>
+            <button class="btn btn-primary" onclick="generateReportCharts()"><i data-lucide="filter" style="width:16px;height:16px;"></i> Update Charts</button>
+          </div>
+          <div class="split-layout">
+            <div style="border:1px solid var(--border); border-radius:var(--radius-md); padding:16px;"><h3 style="font-size:1rem; font-weight:600; margin-bottom:12px; text-align:center;">Cash Flow</h3><div style="height: 250px; position:relative;"><canvas id="rep-chart-cashflow"></canvas></div></div>
+            <div style="border:1px solid var(--border); border-radius:var(--radius-md); padding:16px;"><h3 style="font-size:1rem; font-weight:600; margin-bottom:12px; text-align:center;">Scheme Distribution</h3><div style="height: 250px; position:relative;"><canvas id="rep-chart-schemes"></canvas></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="rep-section-bosummary" style="display:none;">
+        <div class="card p-4">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 12px;">
+            <h2 class="card-title m-0"><i data-lucide="book-open"></i> Monthly BO Account Summary</h2>
+            <div style="display:flex; gap:8px;"><button class="btn btn-success no-print" onclick="exportSummaryCSV()"><i data-lucide="sheet"></i> Download Excel (CSV)</button></div>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6" style="background: var(--bg-input); padding: 16px; border-radius: var(--radius-md); border: 1px solid var(--border);">
+              <div class="flex gap-3">
+                  <div class="flex-1" style="max-width: 250px;"><label style="font-size: 0.75rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase;">Select Month</label><input type="month" id="summary-month" class="input-field w-full mt-1" onchange="generateBOSummaryReport()"></div>
+                  <div class="flex items-end"><button class="btn btn-primary mt-1" style="height: 42px;" onclick="generateBOSummaryReport()"><i data-lucide="refresh-cw" style="width:16px;height:16px;"></i> Generate Summary</button></div>
+              </div>
+          </div>
+          <div id="boSummaryTableArea" class="table-container mt-4 overflow-x-auto" style="background: white;"><div style="padding: 32px; text-align: center; color: var(--text-muted);">Select month and click Generate Summary</div></div>
+        </div>
+      </div>
+
+      <div id="rep-section-accounts" style="display:none;">
+        <div class="card p-4">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 12px;">
+            <h2 class="card-title m-0"><i data-lucide="users"></i> Account Summary Report</h2>
+            <div style="display:flex; gap:8px;"><button class="btn btn-outline" onclick="exportModulePDF('accSummaryWrap', 'Account_Summary_Report')"><i data-lucide="file-text"></i> Download PDF</button><button class="btn btn-success" onclick="exportExcelTable('accSummaryTable', 'Account_Summary_Report')"><i data-lucide="sheet"></i> Download Excel</button></div>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6" style="background: var(--bg-input); padding: 16px; border-radius: var(--radius-md); border: 1px solid var(--border);">
+              <div><label style="font-size: 0.75rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase;">Filter by Scheme</label><select id="accScheme" class="input-field w-full mt-1"><option value="All">All Schemes</option><option value="SB">SB</option><option value="RD">RD</option><option value="MIS">MIS</option><option value="SSA">SSA</option><option value="1Y TD">1Y TD</option><option value="2Y TD">2Y TD</option><option value="3Y TD">3Y TD</option><option value="5Y TD">5Y TD</option><option value="SCSS">SCSS</option><option value="PPF">PPF</option></select></div>
+              <div class="flex gap-3">
+                  <div class="flex-1"><label style="font-size: 0.75rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase;">From Date</label><input type="date" id="accFromDate" class="input-field w-full mt-1"></div>
+                  <div class="flex-1"><label style="font-size: 0.75rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase;">To Date</label><input type="date" id="accToDate" class="input-field w-full mt-1"></div>
+                  <div class="flex items-end"><button class="btn btn-primary mt-1" style="height: 42px;" onclick="generateAccountSummaryReport()"><i data-lucide="activity" style="width:16px;height:16px;"></i> Generate Insights</button></div>
+              </div>
+          </div>
+          <div id="accSummaryWrap" style="background: white; padding: 16px;">
+              <div id="accInsightsArea" style="margin-bottom: 24px; display: none;">
+                  <h3 style="font-size: 0.875rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 12px;">Comparative Performance (vs Previous Periods)</h3>
+                  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px;" id="accInsightsCards"></div>
+              </div>
+              <div id="accSummaryTableArea" class="table-container mt-4 overflow-x-auto" style="border:none;"><div style="padding: 32px; text-align: center; color: var(--text-muted);">Select filters and click Generate Insights</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SETTINGS -->
+    <div class="tab-panel" id="tab-panel-settings">
+      <div class="card">
+        <div class="card-header"><h2 class="card-title"><i data-lucide="settings"></i> Branch Settings & Data Backup</h2></div>
+        <div class="split-layout">
+          <div style="border:1px solid var(--border); border-radius:var(--radius-md); padding:20px;">
+            <h3 style="font-size:1rem; font-weight:700; margin-bottom:8px;">Branch Profile</h3>
+            <div class="input-group" style="margin-bottom:12px;"><label>BO Name</label><input type="text" id="set-boName" onchange="saveSettings()" placeholder="My Branch Office"></div>
+            <div class="input-group" style="margin-bottom:12px;"><label>SPO Name</label><input type="text" id="set-spoName" onchange="saveSettings()"></div>
+            <div class="input-group" style="margin-bottom:12px;"><label>HO Name</label><input type="text" id="set-hoName" onchange="saveSettings()"></div>
+            <div class="holiday-manager">
+              <label>Branch Holidays</label>
+              <div class="holiday-add-row">
+                <input type="date" id="holiday-date-picker" aria-label="Holiday date">
+                <input type="text" id="holiday-name-input" placeholder="Holiday name (optional)" aria-label="Holiday name">
+                <button class="btn btn-primary" type="button" onclick="addBranchHoliday()"><i data-lucide="calendar-plus"></i> Add</button>
+              </div>
+              <small>Sundays are detected automatically. Add only branch-specific or declared holidays.</small>
+              <div id="holiday-list" class="holiday-list"></div>
+            </div>
+          </div>
+          <div style="border:1px solid var(--border); border-radius:var(--radius-md); padding:20px;">
+            <h3 style="font-size:1rem; font-weight:700; margin-bottom:8px;">Data Management</h3>
+            <button class="btn btn-outline" style="width:100%; margin-bottom:12px; justify-content:center;" onclick="exportDataBackup()"><i data-lucide="download"></i> Download Full Backup</button>
+            <input type="file" id="backupFileInput" accept=".json" style="display: none;" onchange="importDataBackup(event)">
+            <button class="btn btn-outline" style="width:100%; justify-content:center;" onclick="document.getElementById('backupFileInput').click()"><i data-lucide="upload"></i> Restore from Backup</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<!-- PRINTABLE TEMPLATES -->
+<div id="slip-print-area" class="print-only" style="font-family: monospace;">
+  <div style="text-align: center; border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 10px;">
+    <h2 style="margin:0; font-size: 16px;">India Post</h2>
+    <p style="margin:0; font-size: 12px;" id="slip-bo-name"></p>
+  </div>
+  <h3 style="text-align: center; font-size: 14px; margin: 5px 0;">Account Opening Slip</h3>
+  <table style="width: 100%; font-size: 12px; line-height: 1.5;">
+    <tr><td style="width: 40%; font-weight: bold;">Date:</td><td id="slip-date"></td></tr>
+    <tr><td style="font-weight: bold;">Name:</td><td id="slip-name"></td></tr>
+    <tr><td style="font-weight: bold;">Scheme:</td><td id="slip-scheme"></td></tr>
+    <tr><td style="font-weight: bold;">A/C Number:</td><td id="slip-acc"></td></tr>
+    <tr><td style="font-weight: bold;">CIF:</td><td id="slip-cif"></td></tr>
+    <tr><td style="font-weight: bold;">Amount:</td><td id="slip-amount"></td></tr>
+  </table>
+  <p style="font-size: 10px; text-align: center; margin-top: 15px; border-top: 1px dashed #000; padding-top: 5px;">Thank you for banking with us!</p>
+</div>
+
+<!-- Hidden PDF Receipt Area (HTML2Canvas target) -->
+<div id="receipt-print-wrap" style="position: absolute; left: -9999px; top: 0; z-index: -1;">
+    <div id="receipt-print-area" style="width: 800px; padding: 40px; background: white; color: black; font-family: 'Inter', sans-serif; box-sizing: border-box; border: 2px solid #da291c;">
+       <div style="text-align: center; margin-bottom: 30px; border-bottom: 3px solid #da291c; padding-bottom: 20px;">
+           <h1 style="color: #da291c; margin: 0; font-size: 28px; font-weight: 800; text-transform: uppercase;">Department of Posts, India</h1>
+           <h2 style="margin: 5px 0 0; font-size: 20px; font-weight: 600;" id="rect-bo-name">Branch Office Name</h2>
+           <p style="margin: 5px 0 0; font-size: 14px; color: #555;">Customer Deposit Acknowledgment Receipt</p>
+       </div>
+       <div style="display: flex; justify-content: space-between; font-size: 16px; margin-bottom: 30px; font-weight: 600;">
+           <div>Date: <span id="rect-date"></span></div>
+           <div>Ref No: <span id="rect-ref"></span></div>
+       </div>
+       <table style="width: 100%; border-collapse: collapse; margin-bottom: 40px; font-size: 16px;">
+           <tbody>
+               <tr><td style="padding: 12px; border: 1px solid #ccc; background: #f9fafb; font-weight: 600; width: 40%;">Customer Name</td><td style="padding: 12px; border: 1px solid #ccc; font-weight: 700;" id="rect-name"></td></tr>
+               <tr><td style="padding: 12px; border: 1px solid #ccc; background: #f9fafb; font-weight: 600;">Phone Number</td><td style="padding: 12px; border: 1px solid #ccc;" id="rect-phone"></td></tr>
+               <tr><td style="padding: 12px; border: 1px solid #ccc; background: #f9fafb; font-weight: 600;">Scheme</td><td style="padding: 12px; border: 1px solid #ccc; font-weight: 700; color: #2563eb;" id="rect-scheme"></td></tr>
+               <tr><td style="padding: 12px; border: 1px solid #ccc; background: #f9fafb; font-weight: 600;">Account Number (if generated)</td><td style="padding: 12px; border: 1px solid #ccc; font-family: monospace; font-size: 18px;" id="rect-acc"></td></tr>
+               <tr><td style="padding: 12px; border: 1px solid #ccc; background: #f9fafb; font-weight: 600;">Deposit Amount</td><td style="padding: 12px; border: 1px solid #ccc; font-weight: 800; font-size: 20px; color: #10b981;" id="rect-amount"></td></tr>
+           </tbody>
+       </table>
+       <p style="font-size: 14px; color: #555; text-align: center; margin-bottom: 40px;">* This is a provisional branch office receipt. Please update your passbook from the Account Office for final confirmation.</p>
+       <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-top: 60px;">
+           <div style="text-align: center;"><div style="border-top: 1px solid #000; padding-top: 10px; width: 250px; font-weight: 600;">Branch Postmaster Signature</div></div>
+           <div style="text-align: center;"><div style="border-top: 1px solid #000; padding-top: 10px; width: 150px; font-weight: 600;">B.O. Stamp</div></div>
+       </div>
+    </div>
+</div>
+
+<!-- B.O. Daily Account print template -->
+<section id="boda-print-area" class="print-only" aria-label="B.O. Daily Account">
+  <div class="boda-header">
+    <h2>B.O. Daily Account (BODA) / BO Slip</h2>
+    <div class="boda-meta">
+      <span>BO: <strong id="boda-bo"></strong></span>
+      <span>Account Office: <strong id="boda-ao"></strong></span>
+      <span>Date: <strong id="boda-date"></strong></span>
+    </div>
+  </div>
+
+  <div class="boda-grid">
+    <div>
+      <h3 class="boda-section-title">Receipts (Credit)</h3>
+      <table class="boda-table">
+        <thead><tr><th>Particulars</th><th>Amount (₹)</th></tr></thead>
+        <tbody id="boda-rec-body"></tbody>
+        <tfoot>
+          <tr><td>Total Receipts</td><td id="boda-tot-rec">0</td></tr>
+          <tr class="boda-grand-row"><td>Grand Total (A)</td><td id="boda-grand-rec">0</td></tr>
+        </tfoot>
+      </table>
+    </div>
+    <div>
+      <h3 class="boda-section-title">Payments (Debit)</h3>
+      <table class="boda-table">
+        <thead><tr><th>Particulars</th><th>Amount (₹)</th></tr></thead>
+        <tbody id="boda-pay-body"></tbody>
+        <tfoot>
+          <tr><td>Total Payments</td><td id="boda-tot-pay">0</td></tr>
+          <tr><td>Closing Balance</td><td id="boda-cl-bal">0</td></tr>
+          <tr class="boda-grand-row"><td>Grand Total (B)</td><td id="boda-grand-pay">0</td></tr>
+        </tfoot>
+      </table>
+    </div>
+  </div>
+
+  <div class="boda-balance-words">
+    <strong>Closing Balance (In Words):</strong>
+    <span id="boda-cl-bal-words"></span>
+  </div>
+
+  <div class="boda-cash-details">
+    <h3>Physical Cash Details</h3>
+    <div id="boda-notes-breakdown"></div>
+  </div>
+
+  <div id="boda-remark-section" class="boda-remarks">
+    <h3>Remarks</h3>
+    <div id="boda-remark-text"></div>
+  </div>
+
+  <div class="boda-signatures">
+    <div>BO Date Stamp</div>
+    <div>Signature of BPM</div>
+  </div>
+</section>
+
+<script src="app.js"></script>
+</body>
+</html>
