@@ -39,6 +39,7 @@ function createExportFilename(moduleName, extension = '') {
     const suffix = String(extension || '').replace(/^\./, '');
     return `DakDesk_${safeName}_${date}_SR-${serial}${suffix ? `.${suffix}` : ''}`;
 }
+
 function printModule(moduleName, printClass) {
     const originalTitle = document.title;
     document.title = createExportFilename(moduleName);
@@ -412,6 +413,7 @@ function calcCash() {
     let d = document.getElementById('cb-main-date').value; let cbBal = memCbStates[d] && memCbStates[d].saved ? memCbStates[d].closingBalance : 0; let diffEl = document.getElementById('tally-diff');
     if (memCbStates[d] && memCbStates[d].saved) { let diff = tot - cbBal; if(diff === 0) { diffEl.innerHTML = '✅ Tally matches perfectly'; diffEl.style.color = 'var(--success)'; } else { diffEl.innerHTML = `⚠️ Difference: ${money(diff)}`; diffEl.style.color = 'var(--danger)'; } } else { diffEl.innerHTML = 'Close Treasury to check difference.'; diffEl.style.color = 'var(--text-muted)'; }
 }
+
 function clearCashTally() { [500,200,100,50,20,10,5,2,1].forEach(n => document.getElementById('c-'+n).value=''); calcCash(); }
 async function saveCashTally() {
     let d = document.getElementById('cb-main-date').value; if(!memCbStates[d] || !memCbStates[d].saved) return alert("You must close the treasury for this date before saving the tally.");
@@ -449,7 +451,19 @@ function printBoda() {
 // --------------------------------------------------------------------------------------
 function getNextPrNo() { let startIdx = Math.max(0, memTdEntries.length - 50); let used = memTdEntries.slice(startIdx).map(e => Number(e.prNo)); for(let i=1; i<=50; i++) { if(!used.includes(i)) return i; } return 1; }
 function checkDuplicate(){ const acc=(document.getElementById('accNo')?.value||'').trim(); document.getElementById('dupWarning').style.display=(acc.length>=9 && memTdEntries.some(e=>e.accNo.includes(acc) && e!==memTdEntries[modifyIndex])) ? 'block' : 'none'; }
-function updatePreview(){ const amt=Number(document.getElementById('depAmount')?.value||0); const term=Number(document.getElementById('tdTerm')?.value||1); document.getElementById('previewAmount').textContent=amt; document.getElementById('previewTerm').textContent=term; document.getElementById('previewPercent').textContent=((INCENTIVE_RATES[term]||0)*100).toFixed(1); document.getElementById('previewIncentive').textContent=Math.round(amt*(INCENTIVE_RATES[term]||0)); }
+
+function updatePreview() {
+    const amt=Number(document.getElementById('depAmount')?.value||0); 
+    const term=Number(document.getElementById('tdTerm')?.value||1); 
+    document.getElementById('previewAmount').textContent=amt; 
+    document.getElementById('previewTerm').textContent=term; 
+    
+    // Ensure precision by removing .0 dynamically
+    const ratePct = ((INCENTIVE_RATES[term]||0)*100);
+    document.getElementById('previewPercent').textContent = ratePct % 1 === 0 ? ratePct.toFixed(0) : ratePct.toFixed(1);
+    document.getElementById('previewIncentive').textContent=Math.round(amt*(INCENTIVE_RATES[term]||0)); 
+}
+
 function updateRunningTotal(){ const amt=Number(document.getElementById('depAmount')?.value||0); const term=Number(document.getElementById('tdTerm')?.value||1); const thisInc=Math.round(amt*(INCENTIVE_RATES[term]||0)); const curTotal=memTdEntries.reduce((s,e)=>s+e.incentive,0); document.getElementById('rt-newTotal').textContent=money(curTotal+thisInc); document.getElementById('rt-nextPr').textContent=getNextPrNo(); }
 
 function requestAddEntry(){
@@ -459,7 +473,10 @@ function requestAddEntry(){
   if(!accNo || !depName || !Number.isFinite(deposit) || deposit < 1000) return alert("Fill required fields and enter a deposit of at least ₹1,000.");
   let startIdx = Math.max(0, memTdEntries.length - 50); let last50 = memTdEntries.slice(startIdx); if(last50.some(e => Number(e.prNo) === prNo)) { if(!confirm(`⚠️ PR Number ${prNo} is already used. Duplicate?`)) return; }
   const incentive=Math.round(deposit*(INCENTIVE_RATES[term]||0)); pendingEntry={accNo, depName, prNo, deposit, term, incentive};
-  document.getElementById('modal-accNo').textContent=accNo; document.getElementById('modal-depName').textContent=depName; document.getElementById('modal-prNo').textContent=prNo; document.getElementById('modal-term').textContent=term+' Year'; document.getElementById('modal-depAmount').textContent='₹'+deposit; document.getElementById('modal-incentive').textContent='₹'+incentive; document.getElementById('confirmModal').style.display='flex';
+  
+  // Format term string grammatically
+  const termDisplay = term + (term == 1 ? ' Year' : ' Years');
+  document.getElementById('modal-accNo').textContent=accNo; document.getElementById('modal-depName').textContent=depName; document.getElementById('modal-prNo').textContent=prNo; document.getElementById('modal-term').textContent=termDisplay; document.getElementById('modal-depAmount').textContent='₹'+deposit; document.getElementById('modal-incentive').textContent='₹'+incentive; document.getElementById('confirmModal').style.display='flex';
 }
 function closeModal(){document.getElementById('confirmModal').style.display='none'; pendingEntry=null;}
 async function confirmAddEntry(){ if(!pendingEntry)return; memTdEntries.push(pendingEntry); await localforage.setItem('tdBillEntries', memTdEntries); closeModal(); renderTable(); updateRunningTotal(); document.getElementById('prNo').value = getNextPrNo(); document.getElementById('accNo').value=''; document.getElementById('depName').value=''; document.getElementById('depAmount').value=''; document.getElementById('dupWarning').style.display='none'; document.getElementById('accNo').focus(); }
@@ -519,11 +536,49 @@ window.syncTdFromLedger = async function() {
 }
 
 function renderTable() {
-    let total = 0, dep = 0; const q=(document.getElementById('searchInput')?.value||'').toLowerCase(); const filtered=memTdEntries.filter(e=>e.depName.toLowerCase().includes(q)||e.accNo.includes(q)).sort((a,b) => (parseInt(a.prNo)||99999) - (parseInt(b.prNo)||99999));
+    let total = 0, dep = 0; 
+    const q=(document.getElementById('searchInput')?.value||'').toLowerCase(); 
+    const filtered=memTdEntries.filter(e=>e.depName.toLowerCase().includes(q)||e.accNo.includes(q)).sort((a,b) => (parseInt(a.prNo)||99999) - (parseInt(b.prNo)||99999));
     document.getElementById('entryCount').textContent=q?`${filtered.length} of ${memTdEntries.length} entries`:`${memTdEntries.length} entries`;
-    document.getElementById('tableBody').innerHTML = filtered.map((e,fi) => { const i=memTdEntries.indexOf(e); total+=e.incentive; dep+=e.deposit; return `<tr><td style="border: 1px solid #000; padding: 8px 4px; text-align: center;">${fi+1}</td><td style="border: 1px solid #000; padding: 8px 4px; text-align: center;">${escapeHTML(e.accNo)}</td><td style="border: 1px solid #000; padding: 8px 4px; text-align: center;">${escapeHTML(e.depName)}</td><td style="border: 1px solid #000; padding: 8px 4px; text-align: center;">${escapeHTML(e.prNo)}</td><td style="border: 1px solid #000; padding: 8px 4px; text-align: center;">${e.deposit}</td><td style="border: 1px solid #000; padding: 8px 4px; text-align: center;"><em>${escapeHTML(e.term)} Years</em></td><td style="border: 1px solid #000; padding: 8px 4px; text-align: center;">${((INCENTIVE_RATES[e.term]||0)*100).toFixed(0)}%</td><td style="border: 1px solid #000; padding: 8px 4px; text-align: center;">${e.incentive}</td><td class="no-print text-right"><button class="btn-icon" onclick="openModifyModal(${i})"><i data-lucide="pencil" style="width:14px; height:14px;"></i></button><button class="btn-icon text-danger" onclick="deleteTdEntry(${i})"><i data-lucide="trash-2" style="width:14px; height:14px;"></i></button></td></tr>`; }).join("");
-    lucide.createIcons(); let depEl = document.getElementById('out-totalDep'); if(depEl) depEl.textContent = dep; document.getElementById('out-totalInc').textContent = total; document.getElementById('sum-entries').textContent = memTdEntries.length; document.getElementById('sum-incentive').textContent = money(total); document.getElementById('sum-deposit').textContent = money(dep);
-    ['out-incNum1','out-incNum2'].forEach(id=>{let el=document.getElementById(id); if(el)el.textContent=total;}); const words=total===0?'Zero':toWords(total); ['out-incWords1','out-incWords2'].forEach(id=>{let el=document.getElementById(id); if(el)el.textContent=words;}); let dTimeEl = document.getElementById('footerDateTime'); if(dTimeEl) dTimeEl.textContent=new Date().toLocaleString('en-IN',{dateStyle:'medium',timeStyle:'short'});
+    
+    document.getElementById('tableBody').innerHTML = filtered.map((e,fi) => { 
+        const i=memTdEntries.indexOf(e); 
+        total+=e.incentive; 
+        dep+=e.deposit; 
+        
+        // Exact Grammatical Term Text
+        const displayTerm = `${escapeHTML(e.term)} Year${e.term == 1 ? '' : 's'}`;
+        // Exact Percentage Number handling format rules dynamically (e.g., 0.5% stays 0.5%, 1% stays 1%)
+        const ratePct = ((INCENTIVE_RATES[e.term]||0)*100);
+        const displayRate = ratePct % 1 === 0 ? ratePct.toFixed(0) : ratePct.toFixed(1);
+
+        return `<tr>
+            <td style="border: 1px solid #000; padding: 8px 4px; text-align: center;">${fi+1}</td>
+            <td style="border: 1px solid #000; padding: 8px 4px; text-align: center;">${escapeHTML(e.accNo)}</td>
+            <td style="border: 1px solid #000; padding: 8px 4px; text-align: center;">${escapeHTML(e.depName)}</td>
+            <td style="border: 1px solid #000; padding: 8px 4px; text-align: center;">${escapeHTML(e.prNo)}</td>
+            <td style="border: 1px solid #000; padding: 8px 4px; text-align: center;">${e.deposit}</td>
+            <td style="border: 1px solid #000; padding: 8px 4px; text-align: center;"><em>${displayTerm}</em></td>
+            <td style="border: 1px solid #000; padding: 8px 4px; text-align: center;">${displayRate}%</td>
+            <td style="border: 1px solid #000; padding: 8px 4px; text-align: center;">${e.incentive}</td>
+            <td class="no-print text-right">
+                <button class="btn-icon" onclick="openModifyModal(${i})"><i data-lucide="pencil" style="width:14px; height:14px;"></i></button>
+                <button class="btn-icon text-danger" onclick="deleteTdEntry(${i})"><i data-lucide="trash-2" style="width:14px; height:14px;"></i></button>
+            </td>
+        </tr>`; 
+    }).join("");
+    
+    lucide.createIcons(); 
+    let depEl = document.getElementById('out-totalDep'); if(depEl) depEl.textContent = dep; 
+    document.getElementById('out-totalInc').textContent = total; 
+    document.getElementById('sum-entries').textContent = memTdEntries.length; 
+    document.getElementById('sum-incentive').textContent = money(total); 
+    document.getElementById('sum-deposit').textContent = money(dep);
+    
+    ['out-incNum1','out-incNum2'].forEach(id=>{let el=document.getElementById(id); if(el)el.textContent=total;}); 
+    const words=total===0?'Zero':toWords(total); 
+    ['out-incWords1','out-incWords2'].forEach(id=>{let el=document.getElementById(id); if(el)el.textContent=words;}); 
+    let dTimeEl = document.getElementById('footerDateTime'); if(dTimeEl) dTimeEl.textContent=new Date().toLocaleString('en-IN',{dateStyle:'medium',timeStyle:'short'});
 }
 
 function openModifyModal(i){ modifyIndex=i; const e=memTdEntries[i]; document.getElementById('mod-accNo').value=e.accNo; document.getElementById('mod-depName').value=e.depName; document.getElementById('mod-prNo').value=e.prNo; document.getElementById('mod-depAmount').value=e.deposit; document.getElementById('mod-tdTerm').value=e.term; updateModPreview(); document.getElementById('modifyModal').style.display='flex'; }
@@ -569,6 +624,7 @@ async function updateHeaders(){
     await localforage.setItem('tdBillSpo', globalSpoName);
     await localforage.setItem('tdBillHo', globalHoName);
 }
+
 function openNewBillModal(){ const y=new Date().getFullYear(),m=String(new Date().getMonth()+1).padStart(2,'0'); document.getElementById('newBillLabel').value=`${m}/${y} Bill`; document.getElementById('newBillModal').style.display='flex'; }
 function closeNewBillModal(){document.getElementById('newBillModal').style.display='none';}
 async function confirmNewBill() { const label=document.getElementById('newBillLabel').value.trim()||'Untitled Bill'; if(memTdEntries.length){ memTdHist.unshift({label,entries:JSON.parse(JSON.stringify(memTdEntries)),savedAt:Date.now()}); if(memTdHist.length>20) memTdHist.splice(20); await localforage.setItem('tdBillHistory', memTdHist); } memTdEntries=[]; await localforage.setItem('tdBillEntries', []); document.getElementById('newBillModal').style.display='none'; renderTable(); renderHistory(); }
