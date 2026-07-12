@@ -7,7 +7,7 @@ localforage.config({ name: 'BPMDeskDatabaseV3', storeName: 'bpmdata' });
 
 // Global Variables
 let memCbData = [], memCbStates = {}, memTallyHist = [], memTdEntries = [], memTdHist = [], memAccReg = [], memOverrides = {}, memSettings = {};
-let globalBoName = 'My Branch Office', globalSpoName = '', globalHoName = '';
+let globalBoName = 'My Branch Office', globalBpmName = '', globalSpoName = '', globalHoName = '';
 let memHolidayDates = [];
 let memHolidayNames = {};
 const activeSchemesRegister = ['SB', 'RD', '1Y TD', '2Y TD', '3Y TD', '5Y TD', 'MIS', 'SCSS', 'PPF', 'SSA', 'NSC', 'KVP', 'MSSC'];
@@ -15,10 +15,16 @@ const boReceiptSchemes = ['Cash from AO', 'SB Deposit', 'RD Deposit', 'TD/MIS/SC
 const boPaymentSchemes = ['Remittance to AO', 'SB Withdrawal', 'IPPB Withdrawal', 'PLI/RPLI Payment', 'Wages/Expenses', 'General/Other'];
 const INCENTIVE_RATES = {1:0.005, 2:0.01, 3:0.01, 5:0.02};
 let activeRegIds = { acc: '', phone: '', cif: '', aadhaar: '', pan: '' };
-let repChartCashFlow = null, repChartSchemes = null, dashChartSchemes = null, tdChart = null;
+let repChartCashFlow = null, repChartSchemes = null, repChartClosing = null, repChartTat = null, repChartTdDrill = null, dashChartSchemes = null, tdChart = null;
 let currentEditIndex = -1, modifyIndex = -1, pendingEntry = null;
 let selectedLedgerIndices = new Set(), lastFilteredLedgerIndices = [];
+let ledgerViewMode = 'scheme';
 let memAuditLog = [], memRecycleBin = [], memReminders = [], memReceiptHistory = [], memClosingChecklists = {};
+const passbookBoardStatuses = [
+    { key: 'Pending AO', title: 'Pending AO', icon: 'clock' },
+    { key: 'At BO', title: 'At BO', icon: 'archive' },
+    { key: 'Delivered', title: 'Delivered', icon: 'check-circle-2' }
+];
 
 // Helpers
 function money(v){ return new Intl.NumberFormat("en-IN",{style:"currency",currency:"INR",minimumFractionDigits:2,maximumFractionDigits:2}).format(Number.isFinite(v)?v:0); }
@@ -31,6 +37,49 @@ function getClosedDayReason(dateStr) {
     if (memHolidayDates.includes(dateStr)) reasons.push(memHolidayNames[dateStr] || 'Branch Holiday');
     return reasons.join(' / ');
 }
+function getTreasuryWorkflowState(dateStr) {
+    const state = memCbStates[dateStr] || {};
+    const closedReason = getClosedDayReason(dateStr);
+    return {
+        state,
+        closedReason,
+        isHoliday: Boolean(closedReason),
+        isSaved: Boolean(state.saved),
+        isLocked: Boolean(state.tallyLocked),
+    };
+}
+function setTreasuryBanner(message, tone = 'info') {
+    const banner = document.getElementById('treasury-day-banner');
+    if (!banner) return;
+    if (!message) {
+        banner.hidden = true;
+        banner.textContent = '';
+        banner.className = 'treasury-day-banner';
+        return;
+    }
+    banner.hidden = false;
+    banner.textContent = message;
+    banner.className = `treasury-day-banner treasury-day-banner-${tone}`;
+}
+function openCashTallyMenu() {
+    const tallySection = document.getElementById('tally-section');
+    if (!tallySection) return;
+    tallySection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    tallySection.classList.add('treasury-focus');
+    setTimeout(() => tallySection.classList.remove('treasury-focus'), 1500);
+}
+function focusCashDenominationGrid() {
+    const grid = document.getElementById('cash-inputs-grid');
+    if (grid) grid.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    document.getElementById('c-500')?.focus();
+}
+function openTreasuryEntryEditor() {
+    const forms = document.getElementById('cb-forms-container');
+    if (forms) forms.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    document.getElementById('cb-rec-desc')?.focus();
+}
+window.focusCashDenominationGrid = focusCashDenominationGrid;
+window.openTreasuryEntryEditor = openTreasuryEntryEditor;
 function createExportFilename(moduleName, extension = '') {
     const safeName = String(moduleName || 'Report').trim().replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'Report';
     const date = new Date().toISOString().slice(0, 10);
@@ -58,6 +107,15 @@ function toWords(n){
   const ones=['','One','Two','Three','Four','Five','Six','Seven','Eight','Nine','Ten','Eleven','Twelve','Thirteen','Fourteen','Fifteen','Sixteen','Seventeen','Eighteen','Nineteen']; const tens=['','','Twenty','Thirty','Forty','Fifty','Sixty','Seventy','Eighty','Ninety'];
   function h(num){ if(num===0)return''; if(num<20)return ones[num]+' '; if(num<100)return tens[Math.floor(num/10)]+' '+(num%10?ones[num%10]+' ':''); return ones[Math.floor(num/100)]+'Hundred '+(num%100?h(num%100):''); }
   let w='',rem=Math.round(n); if(rem>=10000000){w+=h(Math.floor(rem/10000000))+'Crore ';rem%=10000000;} if(rem>=100000){w+=h(Math.floor(rem/100000))+'Lakh ';rem%=100000;} if(rem>=1000){w+=h(Math.floor(rem/1000))+'Thousand ';rem%=1000;} w+=h(rem); return w.trim();
+}
+
+function getTdTermFromScheme(scheme) {
+    const label = String(scheme || '').toUpperCase();
+    if (!label.includes('TD')) return null;
+    if (label.includes('5Y')) return 5;
+    if (label.includes('3Y')) return 3;
+    if (label.includes('2Y')) return 2;
+    return 1;
 }
 
 // Global Export Tools
@@ -102,8 +160,8 @@ function switchTab(name){
   
   if (name === 'dashboard') renderDashboard();
   if (name === 'cashbook') { loadCashBookDate(); checkTallyDate(); }
-  if (name === 'reports') { showReportSection('analytics'); }
-  if (name === 'rates') { updatePosbCalculator(); }
+  if (name === 'reports') { initInsightsStudioFilters(); runInsightsStudio(); }
+    if (name === 'rates') { updatePosbCalculator(); initIntegratedPosbCalculator(); }
   if (name === 'register') { setTimeout(() => { const container = document.querySelector('#tab-panel-register .table-container'); if (container) container.scrollTop = container.scrollHeight; }, 100); }
 }
 
@@ -217,6 +275,7 @@ async function initApp() {
     memTallyHist = await localforage.getItem('cashTallyHistory') || [];
     memOverrides = await localforage.getItem('manualOverridesV5') || {}; 
     globalBoName = await localforage.getItem('tdBillBoName') || 'My Branch Office';
+    globalBpmName = await localforage.getItem('tdBillBpmName') || '';
     globalSpoName = await localforage.getItem('tdBillSpo') || '';
     globalHoName = await localforage.getItem('tdBillHo') || '';
     memHolidayDates = await localforage.getItem('branchHolidayDates') || [];
@@ -241,16 +300,19 @@ async function initApp() {
     
     const schemeOptions = activeSchemesRegister.map(s=>`<option value="${s}">${s}</option>`).join("");
     document.getElementById("regScheme").innerHTML = schemeOptions; document.getElementById("ledgerModScheme").innerHTML = schemeOptions;
-    document.getElementById("bulk-edit-scheme").innerHTML = '<option value="">No change</option>' + schemeOptions;
+    const bulkEditScheme = document.getElementById("bulk-edit-scheme");
+    if (bulkEditScheme) bulkEditScheme.innerHTML = '<option value="">No change</option>' + schemeOptions;
     document.getElementById("cb-rec-scheme").innerHTML = boReceiptSchemes.map(s=>`<option value="${s}">${s}</option>`).join("");
     document.getElementById("cb-pay-scheme").innerHTML = boPaymentSchemes.map(s=>`<option value="${s}">${s}</option>`).join("");
     
     document.getElementById("regPr").value = getLedgerNextPrNo(); 
     document.getElementById('heroEyebrow').textContent = globalBoName;
     document.getElementById('set-boName').value = globalBoName; 
+    document.getElementById('set-bpmName').value = globalBpmName;
     document.getElementById('set-spoName').value = globalSpoName; 
     document.getElementById('set-hoName').value = globalHoName;
     renderHolidayList();
+    document.getElementById('bpmName').value = globalBpmName;
     document.getElementById('spoName').value = globalSpoName; 
     document.getElementById('hoName').value = globalHoName; 
     document.getElementById('billDate').value = todayStr;
@@ -260,19 +322,760 @@ async function initApp() {
     renderDashboard();
     renderTable(); renderHistory(); updatePreview(); updateHeaders();
     renderPosbPresets(); updatePosbCalculator();
+    initIntegratedPosbCalculator();
+    initInsightsStudioFilters();
     checkBackupReminder();
+    checkMonthlyMasterReportReminder();
+}
+
+let posbIntegratedReady = false;
+let posbIntegratedLastResult = null;
+let posbIntegratedCompareState = { custom: null };
+
+function refreshIntegratedPosbWaContacts() {
+    const contactSelect = document.getElementById('posb-wa-contact');
+    if (!contactSelect) return;
+    const currentValue = contactSelect.value;
+    const uniqueContacts = new Map();
+
+    memAccReg.forEach(entry => {
+        const digits = String(entry.phone || '').replace(/\D/g, '');
+        if (!digits) return;
+        const normalized = digits.length === 12 && digits.startsWith('91') ? digits.slice(2) : digits;
+        if (normalized.length !== 10) return;
+        if (!uniqueContacts.has(normalized)) uniqueContacts.set(normalized, entry.name || 'Customer');
+    });
+
+    let html = '<option value="">Custom Number(s)</option>';
+    [...uniqueContacts.entries()]
+        .sort((a, b) => String(a[1]).localeCompare(String(b[1])))
+        .forEach(([phone, name]) => {
+            html += `<option value="${phone}" data-name="${escapeHTML(name)}">${escapeHTML(name)} (${phone})</option>`;
+        });
+
+    contactSelect.innerHTML = html;
+    if (currentValue && [...contactSelect.options].some(opt => opt.value === currentValue)) {
+        contactSelect.value = currentValue;
+    }
+}
+
+function initIntegratedPosbCalculator() {
+    if (posbIntegratedReady) {
+        refreshIntegratedPosbWaContacts();
+        refreshCompareOptions();
+        return;
+    }
+    const schemeSelect = document.getElementById('schemeType');
+    const principalInput = document.getElementById('principal');
+    const durationInput = document.getElementById('duration');
+    const calculateBtn = document.getElementById('calculateBtn');
+    const resetBtn = document.getElementById('resetBtn');
+    const form = document.getElementById('calculatorForm');
+    if (!schemeSelect || !principalInput || !durationInput || !calculateBtn || !resetBtn || !form) return;
+
+    const principalLabel = document.getElementById('principalLabel');
+    const durationHint = document.getElementById('durationHint');
+    const principalHint = document.getElementById('principalHint');
+    const ssaWithdrawWrap = document.getElementById('ssa-withdraw-wrap');
+    const ssaWithdrawInput = document.getElementById('ssa-withdraw-amount');
+    const ppfFrequencyWrap = document.getElementById('ppf-frequency-wrap');
+    const ppfFrequencyInput = document.getElementById('ppf-deposit-frequency');
+    const waContactSelect = document.getElementById('posb-wa-contact');
+    const waNumberInput = document.getElementById('posb-wa-number');
+    const waSendBtn = document.getElementById('posb-wa-send');
+    const compareRunBtn = document.getElementById('posb-compare-run');
+    const compareCustomSelect = document.getElementById('posb-compare-custom');
+    const compareOutput = document.getElementById('posb-compare-output');
+    const emptyState = document.getElementById('emptyState');
+    const resultsContainer = document.getElementById('resultsContainer');
+    const resPrincipal = document.getElementById('resultPrincipal');
+    const resInterest = document.getElementById('resultInterest');
+    const resMaturity = document.getElementById('resultMaturity');
+    const resNote = document.getElementById('resultNote');
+    const chartInvestedBar = document.getElementById('chartInvestedBar');
+    const chartInterestBar = document.getElementById('chartInterestBar');
+    const chartInvestedPct = document.getElementById('chartInvestedPct');
+    const chartInterestPct = document.getElementById('chartInterestPct');
+
+    const schemeMap = {
+        sb: 'Savings',
+        rd: 'RD (5 Yr)',
+        td1: 'TD (1 Yr)',
+        td2: 'TD (2 Yr)',
+        td3: 'TD (3 Yr)',
+        td5: 'TD (5 Yr)',
+        nsc: 'NSC',
+        kvp: 'KVP',
+        ppf: 'PPF',
+        ssa: 'SSA',
+        scss: 'SCSS'
+    };
+
+    const schemeInputMode = {
+        sb: { type: 'lumpsum', fixDur: null, minDur: 1 },
+        rd: { type: 'monthly', fixDur: 5, minDur: 5 },
+        td1: { type: 'lumpsum', fixDur: 1, minDur: 1 },
+        td2: { type: 'lumpsum', fixDur: 2, minDur: 2 },
+        td3: { type: 'lumpsum', fixDur: 3, minDur: 3 },
+        td5: { type: 'lumpsum', fixDur: 5, minDur: 5 },
+        nsc: { type: 'lumpsum', fixDur: 5, minDur: 5 },
+        kvp: { type: 'lumpsum', fixDur: 10, minDur: 1 },
+        ppf: { type: 'lumpsum', fixDur: 15, minDur: 15 },
+        ssa: { type: 'yearly', fixDur: 21, minDur: 21 },
+        scss: { type: 'lumpsum', fixDur: 5, minDur: 5 }
+    };
+
+    const formatCurrency = (amount) => new Intl.NumberFormat('en-IN', {
+        style: 'currency',
+        currency: 'INR',
+        maximumFractionDigits: 0
+    }).format(amount);
+
+    const normalizePhone = raw => {
+        const digits = String(raw || '').replace(/\D/g, '');
+        if (digits.length === 12 && digits.startsWith('91')) return digits.slice(2);
+        if (digits.length === 10) return digits;
+        return '';
+    };
+
+    function buildPosbWaMessage(contactName = '') {
+        if (!posbIntegratedLastResult) return '';
+        const s = posbIntegratedLastResult;
+        const greetingName = contactName ? `${contactName} Ji` : 'Sir/Madam';
+        const customCompare = posbIntegratedCompareState.custom;
+        const compareLine = customCompare
+            ? `💡 *Compare Option:* ${customCompare.label}\n` +
+              `Same *${s.depositAmount}* invest karne par aapko lagbhag *${formatCurrency(customCompare.maturityValueRaw)}* milenge, jisme *${formatCurrency(customCompare.interestValueRaw)}* interest hoga (${customCompare.interestPct}% return).\n\n`
+            : '';
+
+        return `🙏 *Namaskar ${greetingName},*\n\n` +
+            `Aapne *${s.scheme}* ke baare mein pucha tha, to maine aapke liye calculation ki hai.\n\n` +
+            `Agar aap *${s.depositAmount}* invest karte hain, to *${s.years} saal* baad aapko lagbhag *${s.maturity}* milenge.\n\n` +
+            `Isme aapka total interest *${s.interest}* hoga, yaani invested amount ka lagbhag *${s.interestPct}%*. 📈\n\n` +
+            compareLine +
+            `Aap chahein to main isi amount ke liye *2-3 aur Post Office schemes compare karke* bhi bata sakta hoon, jisse aap apne hisaab se suitable option choose kar sakein.\n\n` +
+            `Account open karwana ho ya koi doubt ho to mujhe bata dena. 👍\n\n` +
+            `*— ${globalBpmName || globalBoName}*\n` +
+            `📮 *${globalBoName} Post Office*\n\n` +
+            `*Note: Calculation current interest rates ke according estimated hai. Actual amount applicable rules aur rates ke according vary kar sakta hai.*`;
+    }
+
+    function getCurrentContributionBucket() {
+        if (schemeSelect.value === 'rd') return 'monthly';
+        if (schemeSelect.value === 'ppf' && ppfFrequencyInput?.value === 'monthly') return 'monthly';
+        return 'lumpsum';
+    }
+
+    // Mirrors the "Type" column in the Official Post Office Interest Rates table.
+    const schemeTypeMap = {
+        sb:   'Savings',
+        rd:   'Monthly',
+        td1:  'Payout',
+        td2:  'Payout',
+        td3:  'Payout',
+        td5:  'Payout',
+        scss: 'Payout',
+        ppf:  'Yearly',
+        ssa:  'Yearly',
+        nsc:  'Accumulation',
+        kvp:  'Accumulation',
+    };
+
+    function getSchemeCompareFamily(targetKey) {
+        return schemeTypeMap[targetKey] || 'lumpsum';
+    }
+
+    function getSchemeContributionBucket(targetKey, compareBucket = 'lumpsum') {
+        if (targetKey === 'rd') return 'monthly';
+        if (targetKey === 'ppf') return compareBucket === 'monthly' ? 'monthly' : 'lumpsum';
+        return 'lumpsum';
+    }
+
+    function listCompareCandidates(currentKey, compareBucket = 'lumpsum') {
+        const currentFamily = getSchemeCompareFamily(currentKey);
+        return Object.keys(schemeMap)
+            .filter(key => key !== currentKey && getSchemeCompareFamily(key) === currentFamily)
+            .map(key => ({ key, label: schemeSelect.querySelector(`option[value="${key}"]`)?.textContent?.split(' - ')[0] || schemeMap[key] }));
+    }
+
+    function calculateProjectionForScheme(targetKey, inputAmount, compareBucket = 'lumpsum') {
+        const targetSchemeName = schemeMap[targetKey];
+        const conf = PO_SCHEMES_CALC[targetSchemeName];
+        if (!conf) return null;
+        const mode = schemeInputMode[targetKey] || { type: 'lumpsum', fixDur: conf.years || 1 };
+        const years = mode.fixDur || conf.years || 1;
+        const r = conf.rate / 100;
+
+        if (targetKey === 'ssa') {
+            if (inputAmount < 250) return null;
+            const yearly = Math.min(150000, inputAmount);
+            const depositYears = Math.min(15, years);
+            let bal = 0;
+            let inv = 0;
+            for (let y = 1; y <= years; y++) {
+                if (y <= depositYears) {
+                    bal += yearly;
+                    inv += yearly;
+                }
+                bal += bal * r;
+            }
+            const maturity = Math.round(bal);
+            const invested = Math.round(inv);
+            const interest = Math.max(0, maturity - invested);
+            return { key: targetKey, label: targetSchemeName, years, invested, maturity, interest, interestPct: invested ? ((interest / invested) * 100).toFixed(2) : '0.00' };
+        }
+
+        if (targetKey === 'ppf') {
+            const yearly = Math.max(500, Math.min(150000, inputAmount));
+            let bal = 0;
+            let inv = 0;
+            if (compareBucket === 'monthly') {
+                const monthly = Math.max(50, Math.min(12500, inputAmount));
+                const annualContribution = monthly * 12;
+                if (annualContribution < 500 || annualContribution > 150000) return null;
+                for (let y = 1; y <= years; y++) {
+                    for (let m = 1; m <= 12; m++) {
+                        bal += monthly;
+                        inv += monthly;
+                    }
+                    bal += bal * r;
+                }
+            } else {
+                for (let y = 1; y <= years; y++) {
+                    bal += yearly;
+                    inv += yearly;
+                    bal += bal * r;
+                }
+            }
+            const maturity = Math.round(bal);
+            const invested = Math.round(inv);
+            const interest = Math.max(0, maturity - invested);
+            return { key: targetKey, label: targetSchemeName, years, invested, maturity, interest, interestPct: invested ? ((interest / invested) * 100).toFixed(2) : '0.00' };
+        }
+
+        const safeInitial = mode.type === 'monthly' ? 0 : inputAmount;
+        const safeMonthly = mode.type === 'monthly' ? inputAmount : 0;
+        let principal = safeInitial;
+        let invested = safeInitial;
+        let accumulatedInterest = 0;
+        let paidOutInterest = 0;
+        const tdAnnualYield = Math.pow(1 + r / 4, 4) - 1;
+
+        for (let y = 1; y <= years; y++) {
+            for (let m = 1; m <= 12; m++) {
+                if (mode.type === 'monthly') {
+                    principal += safeMonthly;
+                    invested += safeMonthly;
+                }
+                let monthInterest = 0;
+                switch (conf.logic) {
+                    case 'TD':
+                        if (m === 12) {
+                            monthInterest = principal * tdAnnualYield;
+                            paidOutInterest += monthInterest;
+                        }
+                        break;
+                    case 'SCSS':
+                        monthInterest = principal * (r / 12);
+                        accumulatedInterest += monthInterest;
+                        if (m % 3 === 0) {
+                            paidOutInterest += accumulatedInterest;
+                            accumulatedInterest = 0;
+                        }
+                        break;
+                    case 'RD':
+                    case 'MSSC':
+                        monthInterest = principal * (r / 12);
+                        accumulatedInterest += monthInterest;
+                        if (m % 3 === 0) {
+                            principal += accumulatedInterest;
+                            accumulatedInterest = 0;
+                        }
+                        break;
+                    case 'ANNUALLY':
+                        monthInterest = principal * (r / 12);
+                        accumulatedInterest += monthInterest;
+                        if (m === 12) {
+                            principal += accumulatedInterest;
+                            accumulatedInterest = 0;
+                        }
+                        break;
+                    default:
+                        monthInterest = principal * (r / 12);
+                        principal += monthInterest;
+                        break;
+                }
+            }
+        }
+
+        const maturity = Math.round(principal + accumulatedInterest + paidOutInterest);
+        const inv = Math.round(invested);
+        const interest = Math.max(0, maturity - inv);
+        return { key: targetKey, label: targetSchemeName, years, invested: inv, maturity, interest, interestPct: inv ? ((interest / inv) * 100).toFixed(2) : '0.00' };
+    }
+
+    function renderCompareOutput(result) {
+        if (!compareOutput) return;
+        if (!result) {
+            compareOutput.textContent = 'No valid comparison available for current input.';
+            return;
+        }
+        compareOutput.innerHTML =
+            `<strong>${result.label}</strong><br>` +
+            `Projected Maturity: <strong>${formatCurrency(result.maturity)}</strong> in ${result.years} years<br>` +
+            `Invested: ${formatCurrency(result.invested)} | Interest: ${formatCurrency(result.interest)} (${result.interestPct}%)`;
+    }
+
+    function refreshCompareOptions() {
+        if (!compareCustomSelect || !schemeSelect) return;
+        const candidates = listCompareCandidates(schemeSelect.value);
+        compareCustomSelect.innerHTML = candidates.map(c => `<option value="${c.key}">${escapeHTML(c.label)}</option>`).join('');
+    }
+
+    function runCustomCompare() {
+        if (!posbIntegratedLastResult) {
+            if (compareOutput) compareOutput.textContent = 'Calculate first to compare schemes.';
+            return;
+        }
+        const targetKey = compareCustomSelect?.value;
+        if (!targetKey) {
+            if (compareOutput) compareOutput.textContent = 'Select a scheme to compare.';
+            return;
+        }
+        const amount = Number(posbIntegratedLastResult.baseAmount || 0);
+        const result = calculateProjectionForScheme(targetKey, amount, getCurrentContributionBucket());
+        if (!result) {
+            posbIntegratedCompareState.custom = null;
+            renderCompareOutput(null, 'custom');
+            return;
+        }
+        posbIntegratedCompareState.custom = {
+            ...result,
+            maturityValueRaw: result.maturity,
+            interestValueRaw: result.interest,
+            maturity: formatCurrency(result.maturity),
+        };
+        renderCompareOutput(posbIntegratedCompareState.custom);
+    }
+
+    function updateUIForScheme() {
+        const mode = schemeInputMode[schemeSelect.value];
+        const isSSA = schemeSelect.value === 'ssa';
+        const isPPF = schemeSelect.value === 'ppf';
+        const ppfIsMonthly = isPPF && ppfFrequencyInput?.value === 'monthly';
+        if (mode.type === 'monthly') {
+            principalLabel.textContent = 'Monthly Installment (₹)';
+            principalHint.textContent = 'Amount deposited every month.';
+        } else if (isPPF && ppfIsMonthly) {
+            principalLabel.textContent = 'Monthly Deposit (₹)';
+            principalHint.textContent = 'PPF monthly installment (annual total must be ₹500 to ₹1,50,000).';
+        } else if (mode.type === 'yearly') {
+            principalLabel.textContent = 'Yearly Deposit (₹)';
+            principalHint.textContent = isSSA
+                ? 'SSA norm: deposit between ₹250 and ₹1,50,000 per financial year for 15 years.'
+                : 'Amount deposited once every year.';
+        } else {
+            principalLabel.textContent = 'Lump Sum Deposit (₹)';
+            principalHint.textContent = 'One-time principal amount.';
+        }
+
+        if (isSSA) {
+            principalInput.min = '250';
+            principalInput.max = '150000';
+            principalInput.step = '50';
+            if ((Number(principalInput.value) || 0) < 250) principalInput.value = 250;
+            if (ssaWithdrawWrap) ssaWithdrawWrap.classList.remove('hidden');
+        } else {
+            principalInput.min = '100';
+            principalInput.removeAttribute('max');
+            principalInput.step = '100';
+            if (ssaWithdrawWrap) ssaWithdrawWrap.classList.add('hidden');
+            if (ssaWithdrawInput) ssaWithdrawInput.value = '0';
+        }
+
+        if (isPPF) {
+            if (ppfFrequencyWrap) ppfFrequencyWrap.classList.remove('hidden');
+            if (ppfIsMonthly) {
+                principalInput.min = '50';
+                principalInput.max = '12500';
+                principalInput.step = '50';
+            } else {
+                principalInput.min = '500';
+                principalInput.max = '150000';
+                principalInput.step = '100';
+                if ((Number(principalInput.value) || 0) < 500) principalInput.value = 500;
+            }
+        } else {
+            if (ppfFrequencyWrap) ppfFrequencyWrap.classList.add('hidden');
+        }
+
+        if (mode.fixDur !== null) {
+            durationInput.value = mode.fixDur;
+            durationInput.disabled = true;
+            durationInput.classList.add('bg-slate-100', 'text-slate-500');
+            durationHint.textContent = `Fixed term of ${mode.fixDur} years.`;
+        } else {
+            durationInput.disabled = false;
+            durationInput.classList.remove('bg-slate-100', 'text-slate-500');
+            if (parseFloat(durationInput.value) < mode.minDur) durationInput.value = mode.minDur;
+            durationInput.min = mode.minDur;
+            durationHint.textContent = `Enter number of years (Min: ${mode.minDur}).`;
+        }
+    }
+
+    function calculateIntegratedPosb() {
+        const conf = PO_SCHEMES_CALC[schemeMap[schemeSelect.value]];
+        const p = parseFloat(principalInput.value) || 0;
+        const t = parseFloat(durationInput.value);
+        if (p <= 0) {
+            alert('Please enter a valid amount.');
+            return;
+        }
+        if (isNaN(t) || t <= 0) {
+            alert('Please enter a valid time period.');
+            return;
+        }
+
+        const mode = schemeInputMode[schemeSelect.value];
+        const r = conf.rate / 100;
+
+        if (schemeSelect.value === 'ppf') {
+            const ppfMode = ppfFrequencyInput?.value === 'monthly' ? 'monthly' : 'yearly';
+            let ppfBalance = 0;
+            let ppfInvested = 0;
+
+            if (ppfMode === 'yearly') {
+                if (p < 500 || p > 150000) {
+                    alert('PPF yearly deposit must be between ₹500 and ₹1,50,000.');
+                    return;
+                }
+                for (let y = 1; y <= t; y++) {
+                    ppfBalance += p;
+                    ppfInvested += p;
+                    ppfBalance += ppfBalance * r;
+                }
+            } else {
+                const monthlyDeposit = p;
+                const annualContribution = monthlyDeposit * 12;
+                if (annualContribution < 500 || annualContribution > 150000) {
+                    alert('PPF monthly mode requires annual contribution between ₹500 and ₹1,50,000.');
+                    return;
+                }
+                for (let y = 1; y <= t; y++) {
+                    for (let m = 1; m <= 12; m++) {
+                        ppfBalance += monthlyDeposit;
+                        ppfInvested += monthlyDeposit;
+                    }
+                    ppfBalance += ppfBalance * r;
+                }
+            }
+
+            const totalInvested = Math.round(ppfInvested);
+            const maturityValue = Math.round(ppfBalance);
+            const totalInterest = Math.max(0, Math.round(maturityValue - totalInvested));
+
+            resPrincipal.textContent = formatCurrency(totalInvested);
+            resInterest.textContent = formatCurrency(totalInterest);
+            resMaturity.textContent = formatCurrency(maturityValue);
+            const ppfNote = `PPF (${ppfMode}): annual compounding projection for ${t} years.`;
+            resNote.textContent = ppfNote;
+
+            posbIntegratedLastResult = {
+                scheme: 'Public Provident Fund (PPF)',
+                years: t,
+                depositLabel: ppfMode === 'monthly' ? `${formatCurrency(p)} monthly` : `${formatCurrency(p)} yearly`,
+                depositAmount: formatCurrency(p),
+                invested: formatCurrency(totalInvested),
+                interest: formatCurrency(totalInterest),
+                interestRaw: totalInterest,
+                maturity: formatCurrency(maturityValue),
+                interestPct: totalInvested ? ((totalInterest / totalInvested) * 100).toFixed(2) : '0.00',
+                baseAmount: p,
+                note: ppfNote,
+            };
+
+            const baseValue = maturityValue || 1;
+            const investedPct = (totalInvested / baseValue) * 100;
+            const interestPct = (totalInterest / baseValue) * 100;
+            chartInvestedBar.style.width = '0%';
+            chartInterestBar.style.width = '0%';
+            setTimeout(() => {
+                chartInvestedBar.style.width = `${investedPct}%`;
+                chartInterestBar.style.width = `${interestPct}%`;
+                chartInvestedPct.textContent = `${investedPct.toFixed(1)}%`;
+                chartInterestPct.textContent = `${interestPct.toFixed(1)}%`;
+            }, 100);
+
+            emptyState.classList.add('hidden');
+            resultsContainer.classList.remove('hidden');
+            return;
+        }
+
+        if (schemeSelect.value === 'ssa') {
+            if (p < 250 || p > 150000) {
+                alert('SSA yearly deposit must be between ₹250 and ₹1,50,000.');
+                return;
+            }
+
+            const requestedWithdrawal = Number(ssaWithdrawInput?.value || 0);
+            if (requestedWithdrawal < 0) {
+                alert('SSA withdrawal cannot be negative.');
+                return;
+            }
+
+            const depositYears = Math.min(15, t);
+            let ssaBalance = 0;
+            let ssaInvested = 0;
+            let year17Closing = 0;
+            let allowedWithdrawal = 0;
+            let actualWithdrawal = 0;
+            for (let y = 1; y <= t; y++) {
+                if (y <= depositYears) {
+                    ssaBalance += p;
+                    ssaInvested += p;
+                }
+
+                if (y === 18 && requestedWithdrawal > 0) {
+                    allowedWithdrawal = Math.max(0, Math.round(year17Closing * 0.5));
+                    actualWithdrawal = Math.min(requestedWithdrawal, allowedWithdrawal, ssaBalance);
+                    ssaBalance -= actualWithdrawal;
+                }
+
+                ssaBalance += ssaBalance * r;
+                if (y === 17) year17Closing = ssaBalance;
+            }
+
+            const totalInvested = Math.round(ssaInvested);
+            const maturityValue = Math.round(ssaBalance);
+            const totalReceived = maturityValue + Math.round(actualWithdrawal);
+            const totalInterest = Math.max(0, Math.round(totalReceived - totalInvested));
+
+            resPrincipal.textContent = formatCurrency(totalInvested);
+            resInterest.textContent = formatCurrency(totalInterest);
+            resMaturity.textContent = formatCurrency(maturityValue);
+            const withdrawNote = actualWithdrawal > 0
+                ? ` Withdrawal in 18th year: ${formatCurrency(actualWithdrawal)} (max allowed ${formatCurrency(allowedWithdrawal)}).`
+                : '';
+            const ssaNote = `SSA: yearly deposits for 15 years, maturity at 21 years, annual compounding.${withdrawNote}`;
+            resNote.textContent = ssaNote;
+
+            posbIntegratedLastResult = {
+                scheme: 'Sukanya Samriddhi Account (SSA)',
+                years: t,
+                depositLabel: `${formatCurrency(p)} yearly`,
+                depositAmount: formatCurrency(p),
+                invested: formatCurrency(totalInvested),
+                interest: formatCurrency(totalInterest),
+                interestRaw: totalInterest,
+                maturity: formatCurrency(maturityValue),
+                interestPct: totalInvested ? ((totalInterest / totalInvested) * 100).toFixed(2) : '0.00',
+                baseAmount: p,
+                note: ssaNote,
+            };
+
+            const baseValue = totalReceived || 1;
+            const investedPct = (totalInvested / baseValue) * 100;
+            const interestPct = (totalInterest / baseValue) * 100;
+            chartInvestedBar.style.width = '0%';
+            chartInterestBar.style.width = '0%';
+            setTimeout(() => {
+                chartInvestedBar.style.width = `${investedPct}%`;
+                chartInterestBar.style.width = `${interestPct}%`;
+                chartInvestedPct.textContent = `${investedPct.toFixed(1)}%`;
+                chartInterestPct.textContent = `${interestPct.toFixed(1)}%`;
+            }, 100);
+
+            emptyState.classList.add('hidden');
+            resultsContainer.classList.remove('hidden');
+            return;
+        }
+
+        const safeInitial = mode.type === 'monthly' ? 0 : p;
+        const safeMonthly = mode.type === 'monthly' ? p : 0;
+
+        let principal = safeInitial;
+        let invested = safeInitial;
+        let accumulatedInterest = 0;
+        let paidOutInterest = 0;
+
+        const tdAnnualYield = Math.pow(1 + r / 4, 4) - 1;
+
+        for (let y = 1; y <= t; y++) {
+            for (let m = 1; m <= 12; m++) {
+                if (mode.type === 'monthly') {
+                    principal += safeMonthly;
+                    invested += safeMonthly;
+                }
+                let monthInterest = 0;
+                switch (conf.logic) {
+                    case 'TD':
+                        if (m === 12) {
+                            monthInterest = principal * tdAnnualYield;
+                            paidOutInterest += monthInterest;
+                        }
+                        break;
+                    case 'MIS':
+                        monthInterest = principal * (r / 12);
+                        paidOutInterest += monthInterest;
+                        break;
+                    case 'SCSS':
+                        monthInterest = principal * (r / 12);
+                        accumulatedInterest += monthInterest;
+                        if (m % 3 === 0) {
+                            paidOutInterest += accumulatedInterest;
+                            accumulatedInterest = 0;
+                        }
+                        break;
+                    case 'MSSC':
+                    case 'RD':
+                        monthInterest = principal * (r / 12);
+                        accumulatedInterest += monthInterest;
+                        if (m % 3 === 0) {
+                            principal += accumulatedInterest;
+                            accumulatedInterest = 0;
+                        }
+                        break;
+                    case 'ANNUALLY':
+                        monthInterest = principal * (r / 12);
+                        accumulatedInterest += monthInterest;
+                        if (m === 12) {
+                            principal += accumulatedInterest;
+                            accumulatedInterest = 0;
+                        }
+                        break;
+                    case 'MONTHLY':
+                    default:
+                        monthInterest = principal * (r / 12);
+                        principal += monthInterest;
+                        break;
+                }
+            }
+        }
+
+        const totalInvested = Math.round(invested);
+        const maturityValue = Math.round(principal + accumulatedInterest + paidOutInterest);
+        const totalInterest = Math.max(0, Math.round(maturityValue - invested));
+
+        resPrincipal.textContent = formatCurrency(totalInvested);
+        resInterest.textContent = formatCurrency(totalInterest);
+        resMaturity.textContent = formatCurrency(maturityValue);
+        resNote.textContent = conf.desc;
+
+        posbIntegratedLastResult = {
+            scheme: schemeSelect.options[schemeSelect.selectedIndex]?.textContent?.split(' - ')[0] || schemeMap[schemeSelect.value],
+            years: t,
+            depositLabel: mode.type === 'monthly' ? `${formatCurrency(p)} monthly` : `${formatCurrency(p)} one-time`,
+            depositAmount: formatCurrency(p),
+            invested: formatCurrency(totalInvested),
+            interest: formatCurrency(totalInterest),
+            interestRaw: totalInterest,
+            maturity: formatCurrency(maturityValue),
+            interestPct: totalInvested ? ((totalInterest / totalInvested) * 100).toFixed(2) : '0.00',
+            baseAmount: p,
+            note: conf.desc,
+        };
+
+        const baseValue = maturityValue || 1;
+        const investedPct = (totalInvested / baseValue) * 100;
+        const interestPct = (totalInterest / baseValue) * 100;
+        chartInvestedBar.style.width = '0%';
+        chartInterestBar.style.width = '0%';
+        setTimeout(() => {
+            chartInvestedBar.style.width = `${investedPct}%`;
+            chartInterestBar.style.width = `${interestPct}%`;
+            chartInvestedPct.textContent = `${investedPct.toFixed(1)}%`;
+            chartInterestPct.textContent = `${interestPct.toFixed(1)}%`;
+        }, 100);
+
+        emptyState.classList.add('hidden');
+        resultsContainer.classList.remove('hidden');
+    }
+
+    schemeSelect.addEventListener('change', () => {
+        updateUIForScheme();
+        emptyState.classList.remove('hidden');
+        resultsContainer.classList.add('hidden');
+        posbIntegratedLastResult = null;
+        posbIntegratedCompareState = { custom: null };
+        refreshCompareOptions();
+        if (compareOutput) compareOutput.textContent = 'Select a scheme to compare.';
+    });
+    ppfFrequencyInput?.addEventListener('change', () => {
+        updateUIForScheme();
+        emptyState.classList.remove('hidden');
+        resultsContainer.classList.add('hidden');
+        posbIntegratedLastResult = null;
+    });
+    calculateBtn.addEventListener('click', calculateIntegratedPosb);
+    form.addEventListener('submit', (e) => { e.preventDefault(); calculateIntegratedPosb(); });
+    compareRunBtn?.addEventListener('click', runCustomCompare);
+    waContactSelect?.addEventListener('change', () => {
+        if (!waNumberInput) return;
+        waNumberInput.value = waContactSelect.value || '';
+    });
+    waSendBtn?.addEventListener('click', () => {
+        if (!posbIntegratedLastResult) {
+            alert('Please calculate the estimate first.');
+            return;
+        }
+
+        const selectedOpt = waContactSelect?.selectedOptions?.[0];
+        const contactName = selectedOpt?.dataset?.name || '';
+        const rawNumbers = String(waNumberInput?.value || '').trim();
+        if (!rawNumbers) {
+            alert('Enter a mobile number or select a contact.');
+            return;
+        }
+
+        const numbers = rawNumbers.split(/[\s,;]+/).map(normalizePhone).filter(Boolean);
+        if (!numbers.length) {
+            alert('Enter valid 10-digit mobile number(s).');
+            return;
+        }
+
+        const uniqueNumbers = [...new Set(numbers)].slice(0, 10);
+        const msg = buildPosbWaMessage(contactName);
+        uniqueNumbers.forEach((phone, index) => {
+            setTimeout(() => {
+                window.open(`https://wa.me/91${phone}?text=${encodeURIComponent(msg)}`, '_blank', 'noopener,noreferrer');
+            }, index * 120);
+        });
+        showToast(`WhatsApp draft opened for ${uniqueNumbers.length} contact(s).`);
+    });
+    resetBtn.addEventListener('click', () => {
+        form.reset();
+        updateUIForScheme();
+        emptyState.classList.remove('hidden');
+        resultsContainer.classList.add('hidden');
+        posbIntegratedLastResult = null;
+        posbIntegratedCompareState = { auto: null, custom: null };
+        if (waNumberInput) waNumberInput.value = '';
+        if (waContactSelect) waContactSelect.value = '';
+        refreshCompareOptions();
+        if (compareOutput) compareOutput.textContent = 'Calculate first to view suggestions.';
+    });
+
+    refreshIntegratedPosbWaContacts();
+    refreshCompareOptions();
+    updateUIForScheme();
+    posbIntegratedReady = true;
 }
 
 async function saveSettings() {
     globalBoName = document.getElementById('set-boName').value.trim() || 'My Branch Office';
+    globalBpmName = document.getElementById('set-bpmName').value.trim() || '';
     globalSpoName = document.getElementById('set-spoName').value.trim() || '';
     globalHoName = document.getElementById('set-hoName').value.trim() || '';
     await localforage.setItem('tdBillBoName', globalBoName); 
+    await localforage.setItem('tdBillBpmName', globalBpmName);
     await localforage.setItem('tdBillSpo', globalSpoName); 
     await localforage.setItem('tdBillHo', globalHoName);
     await localforage.setItem('branchHolidayDates', memHolidayDates);
     document.getElementById('heroEyebrow').textContent = globalBoName; 
     document.getElementById('out-boName').textContent = globalBoName;
+    const bpmField = document.getElementById('bpmName');
+    if (bpmField) bpmField.value = globalBpmName;
+    document.getElementById('out-bpmName').textContent = globalBpmName || '__________';
     updateHeaders();
     renderDashboard();
     showToast("Branch settings saved.");
@@ -343,7 +1146,10 @@ function initCashBook() {
 
 function loadCashBookDate() {
     let selectedDate = document.getElementById('cb-main-date').value;
+    let cbState = memCbStates[selectedDate] || {};
+    let treasuryState = getTreasuryWorkflowState(selectedDate);
     document.getElementById('cb-boda-remark').value = memCbStates[selectedDate]?.bodaRemark || "";
+    setTreasuryBanner(treasuryState.isHoliday ? `No transactions today. ${treasuryState.closedReason}.` : '');
     if (!memCbStates[selectedDate]?.cashVerified) {
         let prevTallies = memTallyHist.filter(t => t.date < selectedDate).sort((a,b)=>a.date.localeCompare(b.date));
         if (prevTallies.length > 0) {
@@ -361,18 +1167,57 @@ function loadCashBookDate() {
     document.getElementById('cb-table-body').innerHTML = todayEntries.map(d => `<tr><td style="text-align:left;">${escapeHTML(d.desc)}</td><td class="text-right text-success">${d.type==='receipt'?money(d.amt):'-'}</td><td class="text-right text-danger">${d.type==='payment'?money(d.amt):'-'}</td><td class="text-right" style="font-weight:600;">${money(d.balance)}</td><td class="no-print text-right"><button class="btn-icon" onclick="deleteCbRow(${d.id})"><i data-lucide="x"></i></button></td></tr>`).join('');
     lucide.createIcons();
 
-    let cbState = memCbStates[selectedDate];
-    if (cbState?.tallyLocked) {
-        document.getElementById('cb-forms-container').style.display = 'none'; document.getElementById('btn-save-cb').style.display = 'none'; document.getElementById('btn-modify-cb').style.display = 'inline-flex';
-        document.getElementById('cb-status-badge').textContent = '✅ DAY END'; document.getElementById('cb-status-badge').style.background = '#dcfce7'; document.getElementById('cb-status-badge').style.color = '#166534';
-    } else if (cbState?.saved) {
-        document.getElementById('cb-forms-container').style.display = 'none'; document.getElementById('btn-save-cb').style.display = 'none'; document.getElementById('btn-modify-cb').style.display = 'inline-flex';
-        document.getElementById('cb-status-badge').textContent = '🔒 TREASURY CLOSED'; document.getElementById('cb-status-badge').style.background = '#dbeafe'; document.getElementById('cb-status-badge').style.color = '#1e40af';
+    const treasuryHeroOpen = document.getElementById('treasury-hero-open');
+    const treasuryHeroClose = document.getElementById('treasury-hero-close');
+    const treasuryHeroPhysical = document.getElementById('treasury-hero-physical');
+    const treasuryHeroStatus = document.getElementById('treasury-hero-status');
+    const treasuryHeroNote = document.getElementById('treasury-hero-note');
+    const physicalCash = [500,200,100,50,20,10,5,2,1].reduce((sum, denom) => sum + (Number(document.getElementById(`c-${denom}`)?.value || 0) * denom), 0);
+    if (treasuryHeroOpen) treasuryHeroOpen.textContent = money(opBal);
+    if (treasuryHeroClose) treasuryHeroClose.textContent = money(running);
+    if (treasuryHeroPhysical) treasuryHeroPhysical.textContent = money(physicalCash);
+    const formsContainer = document.getElementById('cb-forms-container');
+    const saveCashBookBtn = document.getElementById('btn-save-cb');
+    const modifyCashBookBtn = document.getElementById('btn-modify-cb');
+    const tallyEntryBtn = document.getElementById('btn-add-treasury-entry');
+    const denominationInputs = [500,200,100,50,20,10,5,2,1].map(n => document.getElementById(`c-${n}`)).filter(Boolean);
+    const tallySaveBtn = document.getElementById('btn-save-tally');
+    const tallyDeleteBtn = document.getElementById('btn-delete-tally');
+
+    if (treasuryHeroStatus) treasuryHeroStatus.textContent = treasuryState.isHoliday ? 'Holiday' : treasuryState.isLocked ? 'Day Ended' : treasuryState.isSaved ? 'Closed' : 'Open';
+    if (treasuryHeroNote) treasuryHeroNote.textContent = treasuryState.isHoliday ? `No transactions today. ${treasuryState.closedReason}.` : treasuryState.isLocked ? 'Treasury is locked for the day.' : treasuryState.isSaved ? 'Treasury closed and ready for tally.' : 'Ready for receipt posting.';
+    if (treasuryState.isHoliday) {
+        if (formsContainer) formsContainer.style.display = 'none';
+        if (saveCashBookBtn) saveCashBookBtn.style.display = 'none';
+        if (modifyCashBookBtn) modifyCashBookBtn.style.display = 'none';
+        if (document.getElementById('cb-status-badge')) { document.getElementById('cb-status-badge').textContent = '🏖 HOLIDAY'; document.getElementById('cb-status-badge').style.background = '#ffedd5'; document.getElementById('cb-status-badge').style.color = '#9a3412'; }
+    } else if (treasuryState.isLocked) {
+        if (formsContainer) formsContainer.style.display = 'none';
+        if (saveCashBookBtn) saveCashBookBtn.style.display = 'none';
+        if (modifyCashBookBtn) modifyCashBookBtn.style.display = 'inline-flex';
+        if (document.getElementById('cb-status-badge')) { document.getElementById('cb-status-badge').textContent = '✅ DAY END'; document.getElementById('cb-status-badge').style.background = '#dcfce7'; document.getElementById('cb-status-badge').style.color = '#166534'; }
+    } else if (treasuryState.isSaved) {
+        if (formsContainer) formsContainer.style.display = 'none';
+        if (saveCashBookBtn) saveCashBookBtn.style.display = 'none';
+        if (modifyCashBookBtn) modifyCashBookBtn.style.display = 'inline-flex';
+        if (document.getElementById('cb-status-badge')) { document.getElementById('cb-status-badge').textContent = '🔒 TREASURY CLOSED'; document.getElementById('cb-status-badge').style.background = '#dbeafe'; document.getElementById('cb-status-badge').style.color = '#1e40af'; }
     } else {
-        document.getElementById('cb-forms-container').style.display = 'grid'; document.getElementById('cb-forms-container').style.gridTemplateColumns = '1fr 1fr'; document.getElementById('cb-forms-container').style.gap = '24px';
-        document.getElementById('btn-save-cb').style.display = 'inline-flex'; document.getElementById('btn-modify-cb').style.display = 'none';
-        document.getElementById('cb-status-badge').textContent = '✏️ TREASURY OPEN'; document.getElementById('cb-status-badge').style.background = '#ffe4e6'; document.getElementById('cb-status-badge').style.color = '#e11d48';
+        if (formsContainer) { formsContainer.style.display = 'grid'; formsContainer.style.gridTemplateColumns = '1fr 1fr'; formsContainer.style.gap = '24px'; }
+        if (saveCashBookBtn) saveCashBookBtn.style.display = 'inline-flex';
+        if (modifyCashBookBtn) modifyCashBookBtn.style.display = 'none';
+        if (document.getElementById('cb-status-badge')) { document.getElementById('cb-status-badge').textContent = '✏️ TREASURY OPEN'; document.getElementById('cb-status-badge').style.background = '#ffe4e6'; document.getElementById('cb-status-badge').style.color = '#e11d48'; }
     }
+    const tallyInputsDisabled = treasuryState.isHoliday || treasuryState.isLocked || !treasuryState.isSaved;
+    denominationInputs.forEach(input => { input.disabled = tallyInputsDisabled; });
+    if (tallySaveBtn) {
+        tallySaveBtn.disabled = treasuryState.isHoliday || !treasuryState.isSaved;
+        if (treasuryState.isHoliday) tallySaveBtn.innerHTML = "<i data-lucide='ban'></i> No Transactions Today";
+        else if (treasuryState.isLocked) tallySaveBtn.innerHTML = "<i data-lucide='save'></i> Day Ended";
+        else if (treasuryState.isSaved) tallySaveBtn.innerHTML = "<i data-lucide='save'></i> Lock Day & Save Tally";
+        else tallySaveBtn.innerHTML = "<i data-lucide='lock'></i> Close Treasury First";
+    }
+    if (tallyEntryBtn) tallyEntryBtn.disabled = treasuryState.isHoliday || treasuryState.isLocked || !treasuryState.isSaved;
+    if (tallyDeleteBtn && treasuryState.isHoliday) tallyDeleteBtn.style.display = 'none';
     checkTallyDate();
 }
 
@@ -384,12 +1229,15 @@ function checkOverrideConfirm() { document.getElementById('override-save-btn').d
 async function saveOverride() { const d = document.getElementById('cb-main-date').value; const raw = document.getElementById('override-input').value.trim(); const amt = Number(raw); if (!d || raw === '' || !Number.isFinite(amt) || amt < 0) return alert("Enter a valid non-negative opening balance."); memOverrides[d] = amt; await localforage.setItem('manualOverridesV5', memOverrides); document.getElementById('overrideModal').style.display = 'none'; showToast("⚠️ Opening Balance Mathematically Overridden."); loadCashBookDate(); }
 async function addCashBookEntry(type) {
     const date = document.getElementById('cb-main-date').value; const scheme = document.getElementById(`cb-${type.substring(0,3)}-scheme`).value; const descRaw = document.getElementById(`cb-${type.substring(0,3)}-desc`).value.trim(); const amt = Number(document.getElementById(`cb-${type.substring(0,3)}-amt`).value);
+    const treasuryState = getTreasuryWorkflowState(date);
+    if (treasuryState.closedReason) return alert(`No treasury transactions are allowed on ${treasuryState.closedReason}.`);
+    if (treasuryState.isSaved || treasuryState.isLocked) return alert('Treasury is closed for the day. Re-open it before adding entries.');
     if(!date || !Number.isFinite(amt) || amt <= 0) return alert("Enter an amount greater than zero.");
     const desc = scheme.includes('General') ? (descRaw || 'Other') : (descRaw ? `[${scheme}] ${descRaw}` : `[${scheme}]`);
     memCbData.push({ id: Date.now(), date, desc, type, amt }); await localforage.setItem('cashBookDataV2', memCbData); document.getElementById(`cb-${type.substring(0,3)}-desc`).value = ''; document.getElementById(`cb-${type.substring(0,3)}-amt`).value = ''; loadCashBookDate();
 }
 async function deleteCbRow(id) { if(confirm("Delete this entry?")) { memCbData = memCbData.filter(d => d.id !== id); await localforage.setItem('cashBookDataV2', memCbData); loadCashBookDate(); } }
-async function saveCashBookDate() { let date = document.getElementById('cb-main-date').value; let closeBal = Number(document.getElementById('cb-cur-bal').textContent.replace(/[^\d.-]/g, '')); if (!memCbStates[date]) memCbStates[date] = {}; memCbStates[date].saved = true; memCbStates[date].closingBalance = closeBal; await localforage.setItem('cashBookStatesV2', memCbStates); loadCashBookDate(); document.getElementById('tally-section').scrollIntoView({behavior: 'smooth'}); }
+async function saveCashBookDate() { let date = document.getElementById('cb-main-date').value; const treasuryState = getTreasuryWorkflowState(date); if (treasuryState.closedReason) return alert(`No treasury transactions are allowed on ${treasuryState.closedReason}.`); let closeBal = Number(document.getElementById('cb-cur-bal').textContent.replace(/[^\d.-]/g, '')); if (!memCbStates[date]) memCbStates[date] = {}; memCbStates[date].saved = true; memCbStates[date].closingBalance = closeBal; await localforage.setItem('cashBookStatesV2', memCbStates); loadCashBookDate(); openCashTallyMenu(); }
 async function modifyCashBookDate() { let date = document.getElementById('cb-main-date').value; if(memCbStates[date]?.tallyLocked) return alert("Cannot re-open Treasury. Unlock tally first."); if(memCbStates[date]) { memCbStates[date].saved = false; await localforage.setItem('cashBookStatesV2', memCbStates); } loadCashBookDate(); }
 
 // --------------------------------------------------------------------------------------
@@ -397,13 +1245,15 @@ async function modifyCashBookDate() { let date = document.getElementById('cb-mai
 // --------------------------------------------------------------------------------------
 function checkTallyDate() {
     let d = document.getElementById('cb-main-date').value; document.getElementById('tally-link-date').textContent = d;
-    let isSaved = memCbStates[d] ? memCbStates[d].saved : false; let cbBal = memCbStates[d] ? memCbStates[d].closingBalance : 0;
+    const treasuryState = getTreasuryWorkflowState(d);
+    let isSaved = treasuryState.isSaved; let cbBal = treasuryState.state ? treasuryState.state.closingBalance : 0;
     document.getElementById('tally-link-bal').textContent = isSaved ? money(cbBal) : '₹---';
     const statusBadge = document.getElementById('tally-link-status'); const saveBtn = document.getElementById('btn-save-tally');
     let existingIdx = memTallyHist.findIndex(t => t.date === d);
     document.getElementById('btn-delete-tally').style.display = existingIdx !== -1 ? 'inline-block' : 'none';
-    if(!isSaved) { statusBadge.innerHTML = "⚠️ Treasury NOT Closed"; statusBadge.style.background = "#fef2f2"; statusBadge.style.color = "var(--danger)"; saveBtn.disabled = true; saveBtn.innerHTML = "<i data-lucide='lock'></i> Close Treasury First"; } 
-    else if (memCbStates[d]?.tallyLocked) { statusBadge.innerHTML = "🔒 Day Ended"; statusBadge.style.background = "#dcfce7"; statusBadge.style.color = "#166534"; saveBtn.disabled = false; saveBtn.innerHTML = "<i data-lucide='save'></i> Replace Saved Tally"; } 
+    if (treasuryState.isHoliday) { statusBadge.innerHTML = `🏖 ${escapeHTML(treasuryState.closedReason)}`; statusBadge.style.background = "#ffedd5"; statusBadge.style.color = "#9a3412"; saveBtn.disabled = true; saveBtn.innerHTML = "<i data-lucide='ban'></i> No Transactions Today"; }
+    else if(!isSaved) { statusBadge.innerHTML = "⚠️ Treasury NOT Closed"; statusBadge.style.background = "#fef2f2"; statusBadge.style.color = "var(--danger)"; saveBtn.disabled = true; saveBtn.innerHTML = "<i data-lucide='lock'></i> Close Treasury First"; } 
+    else if (treasuryState.isLocked) { statusBadge.innerHTML = "🔒 Day Ended"; statusBadge.style.background = "#dcfce7"; statusBadge.style.color = "#166534"; saveBtn.disabled = false; saveBtn.innerHTML = "<i data-lucide='save'></i> Replace Saved Tally"; } 
     else { statusBadge.innerHTML = "✅ Treasury Closed"; statusBadge.style.background = "#dbeafe"; statusBadge.style.color = "#1e40af"; saveBtn.disabled = false; saveBtn.innerHTML = "<i data-lucide='save'></i> Lock Day & Save Tally"; }
     lucide.createIcons(); calcCash();
 }
@@ -416,13 +1266,13 @@ function calcCash() {
 
 function clearCashTally() { [500,200,100,50,20,10,5,2,1].forEach(n => document.getElementById('c-'+n).value=''); calcCash(); }
 async function saveCashTally() {
-    let d = document.getElementById('cb-main-date').value; if(!memCbStates[d] || !memCbStates[d].saved) return alert("You must close the treasury for this date before saving the tally.");
+    let d = document.getElementById('cb-main-date').value; const treasuryState = getTreasuryWorkflowState(d); if (treasuryState.closedReason) return alert(`No treasury transactions are allowed on ${treasuryState.closedReason}.`); if(!treasuryState.isSaved) return alert("You must close the treasury for this date before saving the tally.");
     let tot = Number(document.getElementById('cash-total-val-td').textContent.replace(/[^\d.-]/g, '')); if(tot === 0) return alert("Cannot save empty tally.");
     let existingIdx = memTallyHist.findIndex(t => t.date === d); if (existingIdx !== -1) { if(!confirm(`A tally for ${d} already exists. Replace?`)) return; memTallyHist.splice(existingIdx, 1); }
     let name = document.getElementById('cash-tally-name').value.trim() || `Tally for ${d}`; let notesData = {}; [500,200,100,50,20,10,5,2,1].forEach(n => { notesData[n] = Number(document.getElementById('c-'+n).value)||0; });
     memTallyHist.unshift({ label: name, total: tot, date: d, notes: notesData, savedAt: Date.now() }); if(memTallyHist.length > 20) memTallyHist.splice(20);
     memCbStates[d].tallyLocked = true; await localforage.setItem('cashBookStatesV2', memCbStates); await localforage.setItem('cashTallyHistory', memTallyHist);
-    renderCashHistory(); loadCashBookDate(); showToast("🔒 Day Ended! Tally saved and locked.");
+    renderCashHistory(); loadCashBookDate(); openCashTallyMenu(); showToast("🔒 Day Ended! Tally saved and locked.");
 }
 async function deleteLoadedTally() { let d = document.getElementById('cb-main-date').value; let existingIdx = memTallyHist.findIndex(t => t.date === d); if (existingIdx !== -1) { if(!confirm(`Delete the Cash Tally for ${d}?`)) return; memTallyHist.splice(existingIdx, 1); if(memCbStates[d]) memCbStates[d].tallyLocked = false; await localforage.setItem('cashTallyHistory', memTallyHist); await localforage.setItem('cashBookStatesV2', memCbStates); clearCashTally(); showToast("🗑 Tally deleted."); loadCashBookDate(); renderCashHistory(); } }
 function renderCashHistory() { const el = document.getElementById('cashHistoryList'); if(!memTallyHist.length) return el.innerHTML='<div style="text-align:center; padding:32px; color:var(--text-muted); font-size:0.875rem; border:1px dashed var(--border); border-radius:8px;">No saved tallies yet.</div>'; el.innerHTML = memTallyHist.map((b,i) => `<div style="display:flex; justify-content:space-between; align-items:center; padding:12px 16px; border:1px solid var(--border); border-radius:8px; background:var(--bg-input);"><div><strong style="display:block; font-size:0.875rem;">${b.label}</strong><span style="font-size:0.75rem; color:var(--text-muted);">Total: ${money(b.total)} · Date: ${b.date}</span></div><button class="btn btn-outline" onclick="loadCashTally(${i})" style="height:auto;">Load</button></div>`).join(""); }
@@ -450,7 +1300,29 @@ function printBoda() {
 // TD BILL LOGIC
 // --------------------------------------------------------------------------------------
 function getNextPrNo() { let startIdx = Math.max(0, memTdEntries.length - 50); let used = memTdEntries.slice(startIdx).map(e => Number(e.prNo)); for(let i=1; i<=50; i++) { if(!used.includes(i)) return i; } return 1; }
-function checkDuplicate(){ const acc=(document.getElementById('accNo')?.value||'').trim(); document.getElementById('dupWarning').style.display=(acc.length>=9 && memTdEntries.some(e=>e.accNo.includes(acc) && e!==memTdEntries[modifyIndex])) ? 'block' : 'none'; }
+function checkDuplicate(){ const acc=(document.getElementById('accNo')?.value||'').trim(); document.getElementById('dupWarning').style.display=(acc.length>=9 && memTdEntries.some(e=>String(e.accNo || '').includes(acc) && e!==memTdEntries[modifyIndex])) ? 'block' : 'none'; }
+function getTdEntryOpenDate(entry) {
+    if (entry.openDate) return entry.openDate;
+    const ledgerEntry = memAccReg.find(reg => reg.acc === entry.accNo);
+    return ledgerEntry?.date || '';
+}
+function getFinancialYear(dateStr) {
+    if (!dateStr) return '--';
+    const date = parseLocalDate(dateStr);
+    if (Number.isNaN(date.getTime())) return '--';
+    const startYear = date.getMonth() >= 3 ? date.getFullYear() : date.getFullYear() - 1;
+    return `${startYear}-${String(startYear + 1).slice(-2)}`;
+}
+function compareTdBillEntries(a, b) {
+    const dateA = getTdEntryOpenDate(a);
+    const dateB = getTdEntryOpenDate(b);
+    if (dateA && dateB && dateA !== dateB) return dateA.localeCompare(dateB);
+    if (dateA && !dateB) return -1;
+    if (!dateA && dateB) return 1;
+    const prDiff = (parseInt(a.prNo) || 99999) - (parseInt(b.prNo) || 99999);
+    if (prDiff !== 0) return prDiff;
+    return String(a.accNo || '').localeCompare(String(b.accNo || ''));
+}
 
 function updatePreview() {
     const amt=Number(document.getElementById('depAmount')?.value||0); 
@@ -472,7 +1344,9 @@ function requestAddEntry(){
   const accNo = accNoRaw; let prNo = prNoRaw ? parseInt(prNoRaw) : getNextPrNo();
   if(!accNo || !depName || !Number.isFinite(deposit) || deposit < 1000) return alert("Fill required fields and enter a deposit of at least ₹1,000.");
   let startIdx = Math.max(0, memTdEntries.length - 50); let last50 = memTdEntries.slice(startIdx); if(last50.some(e => Number(e.prNo) === prNo)) { if(!confirm(`⚠️ PR Number ${prNo} is already used. Duplicate?`)) return; }
-  const incentive=Math.round(deposit*(INCENTIVE_RATES[term]||0)); pendingEntry={accNo, depName, prNo, deposit, term, incentive};
+  const incentive=Math.round(deposit*(INCENTIVE_RATES[term]||0));
+  const ledgerEntry = memAccReg.find(reg => reg.acc === accNo);
+  pendingEntry={accNo, depName, prNo, deposit, term, incentive, openDate: ledgerEntry?.date || ''};
   
   // Format term string grammatically
   const termDisplay = term + (term == 1 ? ' Year' : ' Years');
@@ -493,8 +1367,8 @@ window.syncTdFromLedger = async function() {
     }
 
     memAccReg.forEach(reg => {
-        if (!reg.scheme.includes('TD')) return;
-        if (targetMonth && !reg.date.startsWith(targetMonth)) return;
+        if (!String(reg.scheme || '').includes('TD')) return;
+        if (targetMonth && !String(reg.date || '').startsWith(targetMonth)) return;
         if (!reg.acc) { skippedCount++; return; }
 
         const exists = memTdEntries.some(e => e.accNo === reg.acc);
@@ -514,7 +1388,8 @@ window.syncTdFromLedger = async function() {
             prNo: prNo,
             deposit: reg.amt,
             term: term.toString(),
-            incentive: incentive
+            incentive: incentive,
+            openDate: reg.date
         });
         addedCount++;
     });
@@ -538,13 +1413,15 @@ window.syncTdFromLedger = async function() {
 function renderTable() {
     let total = 0, dep = 0; 
     const q=(document.getElementById('searchInput')?.value||'').toLowerCase(); 
-    const filtered=memTdEntries.filter(e=>e.depName.toLowerCase().includes(q)||e.accNo.includes(q)).sort((a,b) => (parseInt(a.prNo)||99999) - (parseInt(b.prNo)||99999));
+    const filtered=memTdEntries.filter(e=>String(e.depName || '').toLowerCase().includes(q)||String(e.accNo || '').includes(q)).sort(compareTdBillEntries);
     document.getElementById('entryCount').textContent=q?`${filtered.length} of ${memTdEntries.length} entries`:`${memTdEntries.length} entries`;
     
     document.getElementById('tableBody').innerHTML = filtered.map((e,fi) => { 
         const i=memTdEntries.indexOf(e); 
-        total+=e.incentive; 
-        dep+=e.deposit; 
+        const deposit = Number(e.deposit) || 0;
+        const incentive = Number(e.incentive) || 0;
+        total+=incentive; 
+        dep+=deposit; 
         
         // Exact Grammatical Term Text
         const displayTerm = `${escapeHTML(e.term)} Year${e.term == 1 ? '' : 's'}`;
@@ -557,10 +1434,10 @@ function renderTable() {
             <td style="border: 1px solid #000; padding: 8px 4px; text-align: center;">${escapeHTML(e.accNo)}</td>
             <td style="border: 1px solid #000; padding: 8px 4px; text-align: center;">${escapeHTML(e.depName)}</td>
             <td style="border: 1px solid #000; padding: 8px 4px; text-align: center;">${escapeHTML(e.prNo)}</td>
-            <td style="border: 1px solid #000; padding: 8px 4px; text-align: center;">${e.deposit}</td>
+            <td style="border: 1px solid #000; padding: 8px 4px; text-align: center;">${deposit}</td>
             <td style="border: 1px solid #000; padding: 8px 4px; text-align: center;"><em>${displayTerm}</em></td>
             <td style="border: 1px solid #000; padding: 8px 4px; text-align: center;">${displayRate}%</td>
-            <td style="border: 1px solid #000; padding: 8px 4px; text-align: center;">${e.incentive}</td>
+            <td style="border: 1px solid #000; padding: 8px 4px; text-align: center;">${incentive}</td>
             <td class="no-print text-right">
                 <button class="btn-icon" onclick="openModifyModal(${i})"><i data-lucide="pencil" style="width:14px; height:14px;"></i></button>
                 <button class="btn-icon text-danger" onclick="deleteTdEntry(${i})"><i data-lucide="trash-2" style="width:14px; height:14px;"></i></button>
@@ -574,6 +1451,8 @@ function renderTable() {
     document.getElementById('sum-entries').textContent = memTdEntries.length; 
     document.getElementById('sum-incentive').textContent = money(total); 
     document.getElementById('sum-deposit').textContent = money(dep);
+    const avgEl = document.getElementById('sum-avg');
+    if (avgEl) avgEl.textContent = money(memTdEntries.length ? total / memTdEntries.length : 0);
     
     ['out-incNum1','out-incNum2'].forEach(id=>{let el=document.getElementById(id); if(el)el.textContent=total;}); 
     const words=total===0?'Zero':toWords(total); 
@@ -584,7 +1463,7 @@ function renderTable() {
 function openModifyModal(i){ modifyIndex=i; const e=memTdEntries[i]; document.getElementById('mod-accNo').value=e.accNo; document.getElementById('mod-depName').value=e.depName; document.getElementById('mod-prNo').value=e.prNo; document.getElementById('mod-depAmount').value=e.deposit; document.getElementById('mod-tdTerm').value=e.term; updateModPreview(); document.getElementById('modifyModal').style.display='flex'; }
 function closeModifyModal(){document.getElementById('modifyModal').style.display='none'; modifyIndex=-1;}
 function updateModPreview(){document.getElementById('mod-preview').textContent=money(Math.round(Number(document.getElementById('mod-depAmount')?.value||0)*(INCENTIVE_RATES[Number(document.getElementById('mod-tdTerm')?.value||1)]||0)));}
-async function saveModifiedEntry(){ if(modifyIndex<0)return; const accNo=document.getElementById('mod-accNo').value, depName=document.getElementById('mod-depName').value.trim(), prNo=document.getElementById('mod-prNo').value, deposit=Number(document.getElementById('mod-depAmount').value), term=document.getElementById('mod-tdTerm').value; if (accNo.length !== 12 || !depName || !Number.isFinite(deposit) || deposit < 1000) return alert("Enter a 12-digit account number, customer name, and deposit of at least ₹1,000."); memTdEntries[modifyIndex]={accNo,depName,prNo,deposit,term,incentive:Math.round(deposit*(INCENTIVE_RATES[term]||0))}; await localforage.setItem('tdBillEntries', memTdEntries); closeModifyModal(); renderTable(); updateRunningTotal(); }
+async function saveModifiedEntry(){ if(modifyIndex<0)return; const accNo=document.getElementById('mod-accNo').value, depName=document.getElementById('mod-depName').value.trim(), prNo=document.getElementById('mod-prNo').value, deposit=Number(document.getElementById('mod-depAmount').value), term=document.getElementById('mod-tdTerm').value; if (accNo.length !== 12 || !depName || !Number.isFinite(deposit) || deposit < 1000) return alert("Enter a 12-digit account number, customer name, and deposit of at least ₹1,000."); const ledgerEntry = memAccReg.find(reg => reg.acc === accNo); memTdEntries[modifyIndex]={accNo,depName,prNo,deposit,term,incentive:Math.round(deposit*(INCENTIVE_RATES[term]||0)),openDate:ledgerEntry?.date || memTdEntries[modifyIndex].openDate || ''}; await localforage.setItem('tdBillEntries', memTdEntries); closeModifyModal(); renderTable(); updateRunningTotal(); }
 async function deleteTdEntry(i) { memTdEntries.splice(i,1); await localforage.setItem('tdBillEntries', memTdEntries); renderTable(); updateRunningTotal(); }
 function printBill() { printModule('TD_Commission_Bill', 'printing-bill'); }
 
@@ -615,12 +1494,16 @@ async function updateHeaders(){
         document.getElementById('out-billDate').innerHTML = bd ? getFormattedDate(bd) : '__________';
     }
 
+    globalBpmName = document.getElementById('bpmName').value;
+    const settingsBpmField = document.getElementById('set-bpmName');
+    if (settingsBpmField) settingsBpmField.value = globalBpmName;
     globalSpoName = document.getElementById('spoName').value;
     globalHoName = document.getElementById('hoName').value;
 
     const spoWrap = document.getElementById('out-spoNameWrapper');
     if (spoWrap) spoWrap.textContent = globalSpoName ? ` via ${globalSpoName}` : '';
 
+    await localforage.setItem('tdBillBpmName', globalBpmName);
     await localforage.setItem('tdBillSpo', globalSpoName);
     await localforage.setItem('tdBillHo', globalHoName);
 }
@@ -686,7 +1569,7 @@ window.renderRegBadges = function() {
 };
 
 async function addRegEntry() {
-    const date = document.getElementById('regDate').value; const name = document.getElementById('regName').value.trim(); const scheme = document.getElementById('regScheme').value; const amt = Number(document.getElementById('regAmount').value); const remarks = document.getElementById('regRemarks').value.trim();
+    const date = document.getElementById('regDate').value; const name = document.getElementById('regName').value.trim(); const relationName = document.getElementById('regRelationName').value.trim(); const scheme = document.getElementById('regScheme').value; const amt = Number(document.getElementById('regAmount').value); const remarks = document.getElementById('regRemarks').value.trim();
     let prNoRaw = document.getElementById('regPr').value.trim(); let accRaw = activeRegIds.acc || ''; let cif = activeRegIds.cif || ''; let phone = activeRegIds.phone || ''; let aadhaar = activeRegIds.aadhaar || ''; let pan = activeRegIds.pan || '';
     
     let prNo = prNoRaw ? parseInt(prNoRaw) : getLedgerNextPrNo();
@@ -700,7 +1583,7 @@ async function addRegEntry() {
     if(acc && memAccReg.some(r => r.acc === acc)) return alert("Duplicate Error: This Account Number already exists.");
     
     let pbStatus = 'N/A'; if(scheme.includes('TD') || scheme === 'SSA' || scheme === 'SB' || scheme === 'RD') pbStatus = 'Pending AO';
-    memAccReg.unshift({date, acc, cif, phone, aadhaar, pan, prNo, name, scheme, amt, pbStatus, remarks});
+    memAccReg.unshift({date, acc, cif, phone, aadhaar, pan, prNo, name, relationName, scheme, amt, pbStatus, remarks});
     clearLedgerSelection(false);
     await localforage.setItem('accRegister', memAccReg); 
     showToast("✅ Account Logged Successfully");
@@ -709,14 +1592,20 @@ async function addRegEntry() {
     
     setTimeout(() => { const container = document.querySelector('#tab-panel-register .table-container'); if (container) container.scrollTop = container.scrollHeight; }, 100);
     
-    activeRegIds = { acc: '', phone: '', cif: '', aadhaar: '', pan: '' }; renderRegBadges(); document.getElementById('regIdValue').value=''; document.getElementById('regPr').value=getLedgerNextPrNo(); document.getElementById('regName').value=''; document.getElementById('regAmount').value=''; document.getElementById('regRemarks').value='';
+    activeRegIds = { acc: '', phone: '', cif: '', aadhaar: '', pan: '' }; renderRegBadges(); document.getElementById('regIdValue').value=''; document.getElementById('regPr').value=getLedgerNextPrNo(); document.getElementById('regName').value=''; document.getElementById('regRelationName').value=''; document.getElementById('regAmount').value=''; document.getElementById('regRemarks').value='';
 }
 
 window.updateRegPbStatus = async function(i, val) { 
     memAccReg[i].pbStatus = val; 
     await localforage.setItem('accRegister', memAccReg); 
-    updateLedgerStats(); 
+    renderRegTable();
+    renderDashboard();
     showToast("📝 Status updated."); 
+};
+
+window.setLedgerView = function(view) {
+    ledgerViewMode = ['table', 'board', 'scheme'].includes(view) ? view : 'scheme';
+    renderRegTable();
 };
 
 function updateBulkLedgerToolbar() {
@@ -987,27 +1876,171 @@ window.generateBulkReceipts = function() {
     showToast(`Generated ${entries.length} receipts in one PDF.`);
 };
 
-function renderRegTable() { 
-    const tbody = document.getElementById('regBody'); const searchTerm = document.getElementById('ledgerSearchInput').value.toLowerCase(); const statusFilter = document.getElementById('ledgerStatusFilter').value;
-    
-    let filteredData = memAccReg.map((e, index) => ({...e, originalIndex: index})).filter(e => {
-        let matchesSearch = true;
-        if (searchTerm) { matchesSearch = (e.name && e.name.toLowerCase().includes(searchTerm)) || (e.acc && e.acc.includes(searchTerm)) || (e.phone && e.phone.includes(searchTerm)) || (e.cif && e.cif.includes(searchTerm)) || (e.aadhaar && e.aadhaar.includes(searchTerm)) || (e.pan && e.pan.toLowerCase().includes(searchTerm)); }
-        let matchesStatus = true; if (statusFilter !== 'All') { matchesStatus = e.pbStatus === statusFilter; }
-        return matchesSearch && matchesStatus;
+function getFilteredLedgerEntries() {
+    const searchTerm = (document.getElementById('ledgerSearchInput')?.value || '').toLowerCase();
+    const statusFilter = document.getElementById('ledgerStatusFilter')?.value || 'All';
+    const monthFilter = document.getElementById('ledgerMonthFilter')?.value || 'All';
+    return memAccReg.map((e, index) => ({...e, originalIndex: index})).filter(e => {
+        const matchesSearch = !searchTerm || String(e.name || '').toLowerCase().includes(searchTerm) || String(e.acc || '').includes(searchTerm) || String(e.phone || '').includes(searchTerm) || String(e.cif || '').includes(searchTerm) || String(e.aadhaar || '').includes(searchTerm) || String(e.pan || '').toLowerCase().includes(searchTerm);
+        const matchesStatus = statusFilter === 'All' || e.pbStatus === statusFilter;
+        const matchesMonth = monthFilter === 'All' || String(e.date || '').startsWith(monthFilter);
+        return matchesSearch && matchesStatus && matchesMonth;
     }).sort((a, b) => {
-        let dateDiff = new Date(a.date) - new Date(b.date);
+        let dateDiff = new Date(a.date || '9999-12-31') - new Date(b.date || '9999-12-31');
         if (dateDiff !== 0) return dateDiff;
         let prA = parseInt(a.prNo) || 99999; let prB = parseInt(b.prNo) || 99999;
         return prA - prB;
     });
+}
+
+function updateLedgerMonthFilter() {
+    const el = document.getElementById('ledgerMonthFilter');
+    if (!el) return;
+    const current = el.value || 'All';
+    const months = [...new Set(memAccReg.map(entry => String(entry.date || '').slice(0, 7)).filter(month => /^\d{4}-\d{2}$/.test(month)))].sort();
+    el.innerHTML = '<option value="All">All Months</option>' + months.map(month => `<option value="${month}">${parseLocalDate(month + '-01').toLocaleString('en-IN', { month: 'short', year: 'numeric' })}</option>`).join('');
+    el.value = months.includes(current) ? current : 'All';
+}
+
+function renderPassbookBoard(entries) {
+    const board = document.getElementById('passbook-board-view');
+    if (!board) return;
+    const boardEntries = entries.filter(e => passbookBoardStatuses.some(status => status.key === (e.pbStatus || 'N/A')));
+    board.innerHTML = passbookBoardStatuses.map(status => {
+        const cards = boardEntries.filter(entry => entry.pbStatus === status.key);
+        return `<section class="passbook-column" data-status="${escapeHTML(status.key)}" ondragover="handlePassbookDragOver(event)" ondragleave="handlePassbookDragLeave(event)" ondrop="handlePassbookDrop(event, '${escapeHTML(status.key)}')">
+            <div class="passbook-column-header">
+                <div class="passbook-column-title"><i data-lucide="${status.icon}"></i><strong>${escapeHTML(status.title)}</strong></div>
+                <span class="passbook-count">${cards.length}</span>
+            </div>
+            <div class="passbook-card-list">
+                ${cards.length ? cards.map(renderPassbookCard).join('') : '<div class="passbook-empty">No passbooks</div>'}
+            </div>
+        </section>`;
+    }).join('');
+    lucide.createIcons();
+}
+
+function renderPassbookCard(entry) {
+    return `<article class="passbook-card" data-status="${escapeHTML(entry.pbStatus || 'N/A')}" draggable="true" ondragstart="handlePassbookDragStart(event, ${entry.originalIndex})" ondragend="handlePassbookDragEnd(event)">
+        <div class="passbook-card-name">${escapeHTML(entry.name || 'Unnamed Customer')}</div>
+        <div class="passbook-card-meta">
+            <span>A/C <b>${escapeHTML(entry.acc || 'Pending')}</b></span>
+            <span>Scheme <b>${escapeHTML(entry.scheme || '--')}</b></span>
+            <span>Date <b>${escapeHTML(entry.date || '--')}</b></span>
+            <span>PR <b>${escapeHTML(entry.prNo || '--')}</b></span>
+            ${entry.phone ? `<span>Phone <b>${escapeHTML(entry.phone)}</b></span>` : ''}
+        </div>
+        <div class="passbook-card-actions">
+            <span class="badge">${escapeHTML(entry.pbStatus || 'N/A')}</span>
+            <div>
+                <button class="passbook-mini-btn" type="button" onclick="openLedgerEditModal(${entry.originalIndex})" title="Edit"><i data-lucide="edit-2"></i></button>
+            </div>
+        </div>
+    </article>`;
+}
+
+function renderSchemeBoard(entries) {
+    const board = document.getElementById('scheme-board-view');
+    if (!board) return;
+    const knownSchemes = activeSchemesRegister.filter(scheme => entries.some(entry => entry.scheme === scheme));
+    const extraSchemes = [...new Set(entries.map(entry => entry.scheme).filter(scheme => scheme && !activeSchemesRegister.includes(scheme)))];
+    const schemes = [...knownSchemes, ...extraSchemes];
+
+    board.innerHTML = schemes.length ? schemes.map(scheme => {
+        const cards = entries.filter(entry => entry.scheme === scheme);
+        const total = cards.reduce((sum, entry) => sum + (Number(entry.amt) || 0), 0);
+        return `<section class="passbook-column scheme-column">
+            <div class="passbook-column-header">
+                <div class="passbook-column-title"><i data-lucide="landmark"></i><strong>${escapeHTML(scheme)}</strong></div>
+                <span class="passbook-count">${cards.length}</span>
+            </div>
+            <div class="scheme-column-total">${money(total)} deposited</div>
+            <div class="passbook-card-list">
+                ${cards.map(renderSchemeCard).join('')}
+            </div>
+        </section>`;
+    }).join('') : '<div class="passbook-empty">No accounts match the selected filters.</div>';
+    lucide.createIcons();
+}
+
+function renderSchemeCard(entry) {
+    return `<article class="passbook-card scheme-card" data-status="${escapeHTML(entry.pbStatus || 'N/A')}">
+        <div class="passbook-card-name">${escapeHTML(entry.name || 'Unnamed Customer')}</div>
+        <div class="passbook-card-meta">
+            <span>A/C <b>${escapeHTML(entry.acc || 'Pending')}</b></span>
+            <span>Deposit <b>${money(entry.amt)}</b></span>
+            <span>Date <b>${escapeHTML(entry.date || '--')}</b></span>
+            <span>PR <b>${escapeHTML(entry.prNo || '--')}</b></span>
+        </div>
+        <div class="passbook-card-actions">
+            <span class="badge">${escapeHTML(entry.pbStatus || 'N/A')}</span>
+            <div>
+                <button class="passbook-mini-btn" type="button" onclick="openLedgerEditModal(${entry.originalIndex})" title="Edit account"><i data-lucide="edit-2"></i></button>
+                <button class="passbook-mini-btn" type="button" onclick="delReg(${entry.originalIndex})" title="Delete account"><i data-lucide="trash-2"></i></button>
+            </div>
+        </div>
+    </article>`;
+}
+
+window.handlePassbookDragStart = function(event, index) {
+    event.dataTransfer.setData('text/plain', String(index));
+    event.dataTransfer.effectAllowed = 'move';
+    event.currentTarget.classList.add('dragging');
+};
+
+window.handlePassbookDragEnd = function(event) {
+    event.currentTarget.classList.remove('dragging');
+    document.querySelectorAll('.passbook-column.drag-over').forEach(column => column.classList.remove('drag-over'));
+};
+
+window.handlePassbookDragOver = function(event) {
+    event.preventDefault();
+    event.currentTarget.classList.add('drag-over');
+    event.dataTransfer.dropEffect = 'move';
+};
+
+window.handlePassbookDragLeave = function(event) {
+    if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.classList.remove('drag-over');
+};
+
+window.handlePassbookDrop = async function(event, status) {
+    event.preventDefault();
+    event.currentTarget.classList.remove('drag-over');
+    const index = Number(event.dataTransfer.getData('text/plain'));
+    if (!Number.isInteger(index) || !memAccReg[index] || memAccReg[index].pbStatus === status) return;
+    memAccReg[index].pbStatus = status;
+    await localforage.setItem('accRegister', memAccReg);
+    renderRegTable();
+    renderDashboard();
+    showToast(`Passbook moved to ${status}.`);
+};
+
+function renderRegTable() { 
+    const tbody = document.getElementById('regBody');
+    updateLedgerMonthFilter();
+    let filteredData = getFilteredLedgerEntries();
 
     lastFilteredLedgerIndices = filteredData.map(e => e.originalIndex);
 
     updateLedgerStats();
     updateBulkLedgerToolbar();
+    renderPassbookBoard(filteredData);
+    renderSchemeBoard(filteredData);
+    const tableView = document.getElementById('ledger-table-view');
+    const boardView = document.getElementById('passbook-board-view');
+    const schemeBoardView = document.getElementById('scheme-board-view');
+    const tableBtn = document.getElementById('ledger-view-table');
+    const boardBtn = document.getElementById('ledger-view-board');
+    const schemeBtn = document.getElementById('ledger-view-scheme');
+    if (tableView) tableView.style.display = ledgerViewMode === 'table' ? '' : 'none';
+    if (boardView) boardView.style.display = ledgerViewMode === 'board' ? 'grid' : 'none';
+    if (schemeBoardView) schemeBoardView.style.display = ledgerViewMode === 'scheme' ? 'grid' : 'none';
+    if (tableBtn) tableBtn.classList.toggle('active', ledgerViewMode === 'table');
+    if (boardBtn) boardBtn.classList.toggle('active', ledgerViewMode === 'board');
+    if (schemeBtn) schemeBtn.classList.toggle('active', ledgerViewMode === 'scheme');
 
-    if (filteredData.length === 0) { tbody.innerHTML = `<tr><td colspan="10" class="text-center" style="padding: 48px; color: var(--text-muted); font-size: 0.95rem;">No records found matching your criteria.</td></tr>`; return; }
+    if (filteredData.length === 0) { tbody.innerHTML = `<tr><td colspan="11" class="text-center" style="padding: 48px; color: var(--text-muted); font-size: 0.95rem;">No records found matching your criteria.</td></tr>`; return; }
 
     tbody.innerHTML = filteredData.map((e, displayIndex) => {
         let pbOptions = ['N/A', 'Pending AO', 'At BO', 'Delivered'].map(opt => `<option value="${opt}" ${e.pbStatus===opt?'selected':''}>${opt}</option>`).join('');
@@ -1019,6 +2052,7 @@ function renderRegTable() {
         if(e.phone) subDetails.push(`<span style="color:var(--text-muted);">📱 ${escapeHTML(e.phone)}</span>`);
         if(e.aadhaar) subDetails.push(`<span style="color:#d97706;">Aadhaar: ${escapeHTML(e.aadhaar)}</span>`);
         if(e.pan) subDetails.push(`<span style="color:#9333ea;">PAN: ${escapeHTML(e.pan)}</span>`);
+        if(e.relationName) subDetails.push(`<span style="color:#0f766e;">👤 ${escapeHTML(e.relationName)}</span>`);
         if(e.remarks) subDetails.push(`<span style="color:#8b5cf6;">ℹ️ ${escapeHTML(e.remarks)}</span>`);
         if (subDetails.length > 0) { nameDisplay += `<div style="font-size:0.75rem; font-weight: 500; margin-top: 4px; display: flex; flex-direction: column; gap: 2px;">${subDetails.join('')}</div>`; }
         
@@ -1029,7 +2063,8 @@ function renderRegTable() {
         return `<tr class="${isSelected ? 'ledger-row-selected' : ''}">
             <td class="no-print ledger-select-cell"><input class="ledger-row-select" type="checkbox" ${isSelected ? 'checked' : ''} onchange="toggleLedgerSelection(${e.originalIndex}, this.checked)" aria-label="Select ${escapeHTML(e.name)}"></td>
             <td style="font-weight: 600; color: var(--text-muted);">${displayIndex + 1}</td>
-            <td style="color: var(--text-muted); font-weight: 500;">${escapeHTML(e.date)}</td>
+            <td style="color: var(--text-muted); font-weight: 500;">${escapeHTML(e.date || '--')}</td>
+            <td style="color: var(--text-muted); font-weight: 600;">${escapeHTML(getFinancialYear(e.date))}</td>
             <td>${accDisplay}</td>
             <td>${nameDisplay}</td>
             <td style="font-weight: 800; color: var(--primary); font-size: 1rem;">${e.prNo||'--'}</td>
@@ -1042,8 +2077,6 @@ function renderRegTable() {
             </td>
             <td class="text-right no-print">
                 <div style="display: flex; gap: 4px; justify-content: flex-end;">
-                    <button class="btn-icon text-blue-600" onclick="generateCustomerReceipt(${e.originalIndex})" title="Download PDF Receipt"><i data-lucide="file-down"></i></button>
-                    <button class="btn-icon text-indigo-600" onclick="printPassbookSlip(${e.originalIndex})" title="Print Thermal Slip"><i data-lucide="printer"></i></button>
                     <button class="btn-icon" onclick="openLedgerEditModal(${e.originalIndex})" title="Edit Entry"><i data-lucide="edit-2"></i></button>
                     <button class="btn-icon text-danger" onclick="delReg(${e.originalIndex})" title="Delete Entry"><i data-lucide="trash-2"></i></button>
                 </div>
@@ -1056,7 +2089,7 @@ function renderRegTable() {
 function updateLedgerStats() {
     let currentMonth = new Date().toISOString().slice(0, 7);
     let totalAcc = memAccReg.length; let monthAcc = 0; let totalDep = 0; let monthDep = 0; let pendingPb = 0;
-    memAccReg.forEach(r => { totalDep += r.amt; if(r.date.startsWith(currentMonth)) { monthAcc++; monthDep += r.amt; } if(r.pbStatus === 'Pending AO') { pendingPb++; } });
+    memAccReg.forEach(r => { const amt = Number(r.amt) || 0; totalDep += amt; if(String(r.date || '').startsWith(currentMonth)) { monthAcc++; monthDep += amt; } if(r.pbStatus === 'Pending AO') { pendingPb++; } });
     document.getElementById('stat-acc').textContent = totalAcc; document.getElementById('stat-acc-month').textContent = `${monthAcc} this month`; document.getElementById('stat-dep').textContent = money(totalDep); document.getElementById('stat-dep-month').textContent = `${money(monthDep)} this month`; document.getElementById('stat-pb').textContent = pendingPb;
 }
 
@@ -1069,20 +2102,35 @@ window.exportLedgerExcel = function() {
 
 function openLedgerEditModal(i) {
     currentEditIndex = i; const e = memAccReg[i];
-    document.getElementById('ledgerModDate').value = e.date; document.getElementById('ledgerModScheme').value = e.scheme; document.getElementById('ledgerModPr').value = e.prNo || ''; document.getElementById('ledgerModAcc').value = e.acc || ''; document.getElementById('ledgerModPhone').value = e.phone || ''; document.getElementById('ledgerModCif').value = e.cif || ''; document.getElementById('ledgerModAadhaar').value = e.aadhaar || ''; document.getElementById('ledgerModPan').value = e.pan || ''; document.getElementById('ledgerModName').value = e.name; document.getElementById('ledgerModAmount').value = e.amt; document.getElementById('ledgerModPbStatus').value = e.pbStatus || 'N/A'; document.getElementById('ledgerModRemarks').value = e.remarks || '';
-    document.getElementById('ledgerEditModal').style.display = 'flex';
+    const setValue = (id, value) => { const el = document.getElementById(id); if (el) el.value = value ?? ''; };
+    setValue('ledgerModDate', e.date);
+    setValue('ledgerModScheme', e.scheme);
+    setValue('ledgerModPr', e.prNo || '');
+    setValue('ledgerModAcc', e.acc || '');
+    setValue('ledgerModPhone', e.phone || '');
+    setValue('ledgerModCif', e.cif || '');
+    setValue('ledgerModAadhaar', e.aadhaar || '');
+    setValue('ledgerModPan', e.pan || '');
+    setValue('ledgerModName', e.name);
+    setValue('ledgerModRelationName', e.relationName || '');
+    setValue('ledgerModAmount', e.amt);
+    setValue('ledgerModPbStatus', e.pbStatus || 'N/A');
+    setValue('ledgerModRemarks', e.remarks || '');
+    const modal = document.getElementById('ledgerEditModal');
+    if (modal) modal.style.display = 'flex';
 }
-function closeLedgerEditModal() { document.getElementById('ledgerEditModal').style.display = 'none'; currentEditIndex = -1; }
+function closeLedgerEditModal() { const modal = document.getElementById('ledgerEditModal'); if (modal) modal.style.display = 'none'; currentEditIndex = -1; }
 
 async function saveEditedLedgerEntry() {
     if (currentEditIndex < 0) return;
+    const readValue = id => document.getElementById(id)?.value ?? '';
     const prRaw = document.getElementById('ledgerModPr').value.trim(); const prNo = prRaw ? parseInt(prRaw) : ''; if (prNo && (prNo < 1 || prNo > 50)) return alert("PR Number must be between 1 and 50.");
-    let accRaw = document.getElementById('ledgerModAcc').value.trim(); const scheme = document.getElementById('ledgerModScheme').value;
+    let accRaw = readValue('ledgerModAcc').trim(); const scheme = readValue('ledgerModScheme');
     if (accRaw.length > 0 && accRaw.length !== 12) { return alert("Account number must be exactly 12 digits."); }
     if(accRaw && memAccReg.some((r, idx) => r.acc === accRaw && idx !== currentEditIndex)) { return alert("Duplicate Error: This Account Number already exists in another entry."); }
-    const name = document.getElementById('ledgerModName').value.trim(); if(!name) return alert("Customer name is required.");
+    const name = readValue('ledgerModName').trim(); if(!name) return alert("Customer name is required.");
     
-    memAccReg[currentEditIndex] = { date: document.getElementById('ledgerModDate').value, scheme: scheme, prNo: prNo, acc: accRaw, phone: document.getElementById('ledgerModPhone').value.trim(), cif: document.getElementById('ledgerModCif').value.trim(), aadhaar: document.getElementById('ledgerModAadhaar').value.replace(/[^0-9]/g, ''), pan: document.getElementById('ledgerModPan').value.toUpperCase().replace(/[^A-Z0-9]/g, ''), name: name, amt: Number(document.getElementById('ledgerModAmount').value), pbStatus: document.getElementById('ledgerModPbStatus').value, remarks: document.getElementById('ledgerModRemarks').value.trim() };
+    memAccReg[currentEditIndex] = { date: readValue('ledgerModDate'), scheme: scheme, prNo: prNo, acc: accRaw, phone: readValue('ledgerModPhone').trim(), cif: readValue('ledgerModCif').trim(), aadhaar: readValue('ledgerModAadhaar').replace(/[^0-9]/g, ''), pan: readValue('ledgerModPan').toUpperCase().replace(/[^A-Z0-9]/g, ''), name: name, relationName: readValue('ledgerModRelationName').trim(), amt: Number(readValue('ledgerModAmount')), pbStatus: readValue('ledgerModPbStatus') || 'N/A', remarks: readValue('ledgerModRemarks').trim() };
     await localforage.setItem('accRegister', memAccReg); 
     closeLedgerEditModal(); renderRegTable(); renderDashboard(); showToast("✏️ Entry updated successfully.");
 }
@@ -1128,15 +2176,41 @@ const PO_SCHEMES_CALC = {
 let posbState = { active: 'Custom', lastResult: null };
 
 function renderPosbPresets() {
-  const container = document.getElementById('posb-presets'); let html = '';
-  Object.keys(PO_SCHEMES_CALC).forEach(key => { if (key !== 'Custom') { html += `<button type="button" class="btn btn-outline" style="font-size:0.75rem; padding:4px 10px; border-radius:16px; ${posbState.active === key ? 'background:var(--brand-red); color:white; border-color:var(--brand-red);' : ''}" onclick="setPosbPreset('${key}')" title="${PO_SCHEMES_CALC[key].desc}">${key}</button>`; } });
+    const container = document.getElementById('posb-presets');
+    if (!container) return;
+    let html = '';
+    Object.keys(PO_SCHEMES_CALC).forEach(key => {
+        if (key !== 'Custom') {
+            html += `<button type="button" class="posb-preset-btn ${posbState.active === key ? 'active' : ''}" onclick="setPosbPreset('${key}')" title="${PO_SCHEMES_CALC[key].desc}">${key}</button>`;
+        }
+    });
   container.innerHTML = html;
 }
-function setPosbPreset(key) { posbState.active = key; const s = PO_SCHEMES_CALC[key]; document.getElementById('posb-rate').value = s.rate; document.getElementById('posb-rate-slider').value = s.rate; document.getElementById('posb-years').value = s.years; document.getElementById('posb-years-slider').value = s.years; updatePosbCalculator(); renderPosbPresets(); }
+function setPosbPreset(key) {
+    const rate = document.getElementById('posb-rate');
+    const rateSlider = document.getElementById('posb-rate-slider');
+    const years = document.getElementById('posb-years');
+    const yearsSlider = document.getElementById('posb-years-slider');
+    if (!rate || !rateSlider || !years || !yearsSlider) return;
+    posbState.active = key;
+    const s = PO_SCHEMES_CALC[key];
+    rate.value = s.rate;
+    rateSlider.value = s.rate;
+    years.value = s.years;
+    yearsSlider.value = s.years;
+    updatePosbCalculator();
+    renderPosbPresets();
+}
 function setPosbCustom() { posbState.active = 'Custom'; renderPosbPresets(); }
 function printRates() { printModule('POSB_Interest_Rates_Report', 'printing-rates'); }
 
 function updatePosbCalculator() {
+    const requiredEls = [
+        'posb-active-label', 'posb-active-desc', 'posb-wrap-init', 'posb-wrap-sip', 'posb-warn-lump', 'posb-warn-sip',
+        'posb-init', 'posb-sip', 'posb-rate', 'posb-years', 'posb-val-invested', 'posb-val-returns', 'posb-val-total',
+        'posb-chart-container'
+    ];
+    if (requiredEls.some(id => !document.getElementById(id))) return;
   const activeConf = PO_SCHEMES_CALC[posbState.active] || PO_SCHEMES_CALC['Custom'];
   document.getElementById('posb-active-label').textContent = posbState.active; document.getElementById('posb-active-desc').textContent = activeConf.desc.split(': ')[1] || activeConf.desc;
   const lumpWrap = document.getElementById('posb-wrap-init'); const sipWrap = document.getElementById('posb-wrap-sip');
@@ -1196,27 +2270,406 @@ window.sendWhatsApp = function(phone, name, scheme, status) { if(!phone || phone
 // REPORT GENERATOR LOGIC
 // --------------------------------------------------------------------------------------
 window.showReportSection = function(section) {
-    document.getElementById('rep-section-analytics').style.display = (section === 'analytics') ? 'block' : 'none';
+    document.getElementById('rep-section-analytics').style.display = 'none';
     document.getElementById('rep-section-bosummary').style.display = (section === 'bosummary') ? 'block' : 'none';
     document.getElementById('rep-section-accounts').style.display = (section === 'accounts') ? 'block' : 'none';
-    
+
     let todayStr = new Date().toISOString().slice(0, 10);
     let firstDay = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
     let curMonth = todayStr.slice(0, 7);
-    
-    if(section === 'bosummary') {
-        if(!document.getElementById('summary-month').value) document.getElementById('summary-month').value = curMonth;
+
+    if (section === 'bosummary') {
+        if (!document.getElementById('summary-month').value) document.getElementById('summary-month').value = curMonth;
         generateBOSummaryReport();
     }
-    if(section === 'accounts') {
-        if(!document.getElementById('accFromDate').value) document.getElementById('accFromDate').value = firstDay;
-        if(!document.getElementById('accToDate').value) document.getElementById('accToDate').value = todayStr;
+    if (section === 'accounts') {
+        if (!document.getElementById('accFromDate').value) document.getElementById('accFromDate').value = firstDay;
+        if (!document.getElementById('accToDate').value) document.getElementById('accToDate').value = todayStr;
         generateAccountSummaryReport();
     }
-    if(section === 'analytics') {
-        generateReportCharts();
+    if (section === 'insights' || section === 'analytics') {
+        runInsightsStudio();
     }
 };
+
+// ── Insights Studio ──────────────────────────────────────────────────────────
+let isTrendChart = null, isPortfolioChart = null, isIncentiveChart = null;
+let insightsTrendTab = 'deposits';
+
+window.switchTrendTab = function(tab) {
+    insightsTrendTab = tab;
+    ['deposits', 'accounts', 'incentive'].forEach(t => {
+        document.getElementById('trend-tab-' + t)?.classList.toggle('active', t === tab);
+    });
+    drawTrendChart(window._insightsCurrentData);
+};
+
+function getInsightsDateRange() {
+    const from = document.getElementById('is-from')?.value;
+    const to = document.getElementById('is-to')?.value;
+    if (!from || !to) {
+        const today = getLocalISODate();
+        const firstOfMonth = today.slice(0, 7) + '-01';
+        return { from: firstOfMonth, to: today };
+    }
+    return { from, to };
+}
+
+function getCompareRange(from, to, mode) {
+    if (mode === 'none') return null;
+    const a = parseLocalDate(from), b = parseLocalDate(to);
+    const diffDays = Math.round((b - a) / 86400000) + 1;
+    if (mode === 'prev_period') {
+        const newTo = new Date(a); newTo.setDate(newTo.getDate() - 1);
+        const newFrom = new Date(newTo); newFrom.setDate(newFrom.getDate() - diffDays + 1);
+        return { from: getLocalISODate(newFrom), to: getLocalISODate(newTo) };
+    }
+    if (mode === 'prev_month') {
+        const pm = new Date(a); pm.setMonth(pm.getMonth() - 1);
+        const pmFirst = new Date(pm.getFullYear(), pm.getMonth(), 1);
+        const pmLast = new Date(pm.getFullYear(), pm.getMonth() + 1, 0);
+        return { from: getLocalISODate(pmFirst), to: getLocalISODate(pmLast) };
+    }
+    if (mode === 'prev_year') {
+        return {
+            from: `${Number(from.slice(0,4))-1}${from.slice(4)}`,
+            to: `${Number(to.slice(0,4))-1}${to.slice(4)}`
+        };
+    }
+    return null;
+}
+
+function getDataForRange(from, to, schemeFilter) {
+    let entries = memAccReg.filter(e => e.date >= from && e.date <= to);
+    if (schemeFilter && schemeFilter !== 'All') entries = entries.filter(e => e.scheme === schemeFilter);
+    const totalDeposits = entries.reduce((s, e) => s + (Number(e.amt) || 0), 0);
+    const totalAccounts = entries.length;
+    const avgDeposit = totalAccounts ? totalDeposits / totalAccounts : 0;
+
+    // TD incentive from ledger entries in range
+    let tdIncentive = 0;
+    entries.forEach(e => {
+        const term = getTdTermFromScheme(e.scheme);
+        if (term) tdIncentive += (Number(e.amt) || 0) * (INCENTIVE_RATES[term] || 0);
+    });
+
+    // Scheme breakdown
+    const schemeMap = {};
+    entries.forEach(e => {
+        if (!schemeMap[e.scheme]) schemeMap[e.scheme] = { accounts: 0, deposits: 0 };
+        schemeMap[e.scheme].accounts++;
+        schemeMap[e.scheme].deposits += Number(e.amt) || 0;
+    });
+
+    // Pipeline
+    const allPipeline = schemeFilter === 'All' ? memAccReg : memAccReg.filter(e => e.scheme === schemeFilter);
+    const pendingAO = allPipeline.filter(e => e.pbStatus === 'Pending AO').length;
+    const atBO = allPipeline.filter(e => e.pbStatus === 'At BO').length;
+    const delivered = allPipeline.filter(e => e.pbStatus === 'Delivered').length;
+
+    // Monthly trend (last 6 months of date range)
+    const months = [];
+    let cur = new Date(from + 'T00:00:00');
+    const endD = parseLocalDate(to);
+    while (cur <= endD) {
+        const ym = getLocalISODate(cur).slice(0, 7);
+        if (!months.includes(ym)) months.push(ym);
+        cur.setMonth(cur.getMonth() + 1);
+    }
+    const trend = months.map(ym => {
+        const mEntries = entries.filter(e => e.date.startsWith(ym));
+        return {
+            label: ym,
+            deposits: mEntries.reduce((s, e) => s + (Number(e.amt) || 0), 0),
+            accounts: mEntries.length,
+            incentive: mEntries.reduce((s, e) => {
+                const term = getTdTermFromScheme(e.scheme);
+                return s + (term ? (Number(e.amt) || 0) * (INCENTIVE_RATES[term] || 0) : 0);
+            }, 0)
+        };
+    });
+
+    return { totalDeposits, totalAccounts, avgDeposit, tdIncentive, schemeMap, pendingAO, atBO, delivered, trend, entries };
+}
+
+function deltaHTML(curr, prev, isAmount = false) {
+    if (prev === null || prev === undefined) return '';
+    const diff = curr - prev;
+    const pct = prev !== 0 ? ((diff / prev) * 100).toFixed(1) : (diff > 0 ? '100' : '0');
+    const sign = diff >= 0 ? '+' : '';
+    const cls = diff > 0 ? 'is-delta-up' : diff < 0 ? 'is-delta-down' : 'is-delta-neutral';
+    const arrow = diff > 0 ? '↑' : diff < 0 ? '↓' : '→';
+    const label = isAmount ? `${sign}${money(diff)}` : `${sign}${diff}`;
+    return `<span class="${cls}">${arrow} ${label} (${sign}${pct}%) vs prev</span>`;
+}
+
+function drawTrendChart(data) {
+    if (!data) return;
+    const ctx = document.getElementById('is-trend-chart')?.getContext('2d');
+    if (!ctx) return;
+    if (isTrendChart) { isTrendChart.destroy(); isTrendChart = null; }
+    const key = insightsTrendTab;
+    const labels = data.trend.map(t => t.label);
+    const values = data.trend.map(t => t[key]);
+    const color = key === 'deposits' ? '#8b1e3f' : key === 'accounts' ? '#4c1d95' : '#0f766e';
+    isTrendChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels,
+            datasets: [{
+                label: key.charAt(0).toUpperCase() + key.slice(1),
+                data: values,
+                backgroundColor: color + '33',
+                borderColor: color,
+                borderWidth: 2,
+                borderRadius: 6,
+                type: 'bar'
+            }, {
+                label: 'Trend',
+                data: values,
+                type: 'line',
+                borderColor: color,
+                borderWidth: 2,
+                fill: false,
+                tension: 0.4,
+                pointRadius: 4,
+                pointBackgroundColor: color
+            }]
+        },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+    });
+}
+
+function drawPortfolioChart(schemeMap) {
+    const ctx = document.getElementById('is-portfolio-chart')?.getContext('2d');
+    if (!ctx) return;
+    if (isPortfolioChart) { isPortfolioChart.destroy(); isPortfolioChart = null; }
+    const schemes = Object.keys(schemeMap);
+    const total = schemes.reduce((s, k) => s + schemeMap[k].deposits, 0);
+    if (!total) return;
+    const colors = ['#8b1e3f','#4c1d95','#0f766e','#c97a1f','#2563eb','#7c3aed','#0891b2','#65a30d','#d97706','#9f1239','#166534','#1d4ed8'];
+    isPortfolioChart = new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+            labels: schemes,
+            datasets: [{ data: schemes.map(k => schemeMap[k].deposits), backgroundColor: colors.slice(0, schemes.length), borderWidth: 2, borderColor: 'var(--bg-card)' }]
+        },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, cutout: '68%' }
+    });
+    const legend = document.getElementById('is-portfolio-legend');
+    if (legend) {
+        legend.innerHTML = schemes.map((k, i) => `<div class="is-donut-legend-item"><span class="is-legend-dot" style="background:${colors[i]};"></span>${escapeHTML(k)} ${((schemeMap[k].deposits/total)*100).toFixed(0)}%</div>`).join('');
+    }
+}
+
+function drawIncentiveChart(data) {
+    const ctx = document.getElementById('is-incentive-chart')?.getContext('2d');
+    if (!ctx) return;
+    if (isIncentiveChart) { isIncentiveChart.destroy(); isIncentiveChart = null; }
+    const labels = data.trend.map(t => t.label);
+    const values = data.trend.map(t => t.incentive);
+    isIncentiveChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels,
+            datasets: [{ label: 'TD Incentive', data: values, borderColor: '#0f766e', backgroundColor: 'rgba(15,118,110,0.12)', borderWidth: 2, fill: true, tension: 0.4, pointRadius: 4 }]
+        },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+    });
+}
+
+function buildInsights(curr, prev, allEntries, from, to) {
+    const insights = [];
+    if (prev) {
+        if (curr.totalDeposits > prev.totalDeposits * 1.1) insights.push({ type: 'green', title: 'Strong Deposit Momentum', desc: `Deposits increased ${(((curr.totalDeposits - prev.totalDeposits) / (prev.totalDeposits || 1)) * 100).toFixed(0)}% compared with the previous period.` });
+        if (curr.totalDeposits < prev.totalDeposits * 0.9) insights.push({ type: 'yellow', title: 'Deposit Slowdown Detected', desc: `Deposits dropped ${(((prev.totalDeposits - curr.totalDeposits) / (prev.totalDeposits || 1)) * 100).toFixed(0)}% compared with the previous period. Consider a campaign or customer outreach.` });
+    }
+
+    const pendingOld = memAccReg.filter(e => e.pbStatus === 'Pending AO');
+    if (pendingOld.length >= 10) insights.push({ type: 'yellow', title: 'Passbook Processing Needs Attention', desc: `${pendingOld.length} passbook${pendingOld.length === 1 ? '' : 's'} are currently pending at Account Office.` });
+
+    const atBOEntries = memAccReg.filter(e => e.pbStatus === 'At BO');
+    const today = getLocalISODate();
+    const stuckAtBO = atBOEntries.filter(e => e.date && ((new Date(today) - new Date(e.date)) / 86400000) > 7);
+    if (stuckAtBO.length > 0) insights.push({ type: 'red', title: 'Action Required – Pending Delivery', desc: `${stuckAtBO.length} account${stuckAtBO.length === 1 ? '' : 's'} ${stuckAtBO.length === 1 ? 'has' : 'have'} been "At BO" for more than 7 days.` });
+
+    // TD incentive opportunity
+    const tdEntries = curr.entries.filter(e => ['1Y TD','2Y TD','3Y TD','5Y TD'].includes(e.scheme));
+    const td5Entries = curr.entries.filter(e => e.scheme === '5Y TD');
+    if (tdEntries.length > 0) {
+        const td5Share = td5Entries.length / tdEntries.length;
+        const td5IncShare = td5Entries.reduce((s,e)=>s+(e.amt||0),0) * 0.02 / (curr.tdIncentive || 1);
+        if (td5Share < 0.35 && td5IncShare > 0.4) insights.push({ type: 'blue', title: 'TD Incentive Opportunity', desc: `5-Year TD represents only ${(td5Share*100).toFixed(0)}% of TD accounts but generates ~${(td5IncShare*100).toFixed(0)}% of your TD incentive. Increasing 5Y TD share could significantly boost incentive earnings.` });
+    }
+
+    const schemeKeys = Object.keys(curr.schemeMap);
+    if (schemeKeys.length > 0) {
+        const top = schemeKeys.reduce((a, b) => curr.schemeMap[a].deposits >= curr.schemeMap[b].deposits ? a : b);
+        insights.push({ type: 'green', title: 'Top Performing Scheme', desc: `${top} leads with ${money(curr.schemeMap[top].deposits)} in deposits across ${curr.schemeMap[top].accounts} account${curr.schemeMap[top].accounts === 1 ? '' : 's'} this period.` });
+    }
+
+    if (insights.length === 0) insights.push({ type: 'blue', title: 'No Alerts', desc: 'All metrics are within normal range. Open filters to analyse a specific period or scheme.' });
+    return insights;
+}
+
+let _insightsDrillData = null;
+
+window.openSchemeDrillModal = function() {
+    const modal = document.getElementById('is-drill-modal');
+    if (!modal || !_insightsDrillData) return;
+    modal.style.display = 'flex';
+};
+window.closeSchemeDrillModal = function() {
+    const modal = document.getElementById('is-drill-modal');
+    if (modal) modal.style.display = 'none';
+};
+
+function buildSchemeDrillModal(schemeMap, entries) {
+    const schemes = Object.keys(schemeMap).sort((a, b) => schemeMap[b].deposits - schemeMap[a].deposits);
+    const totalDeposits = schemes.reduce((s, k) => s + schemeMap[k].deposits, 0);
+    let html = '<div style="display:flex; flex-direction:column; gap:16px;">';
+    schemes.forEach(s => {
+        const { accounts, deposits } = schemeMap[s];
+        const avg = accounts ? deposits / accounts : 0;
+        const share = totalDeposits ? ((deposits / totalDeposits) * 100).toFixed(1) : 0;
+        const term = getTdTermFromScheme(s);
+        const incentive = term ? deposits * (INCENTIVE_RATES[term] || 0) : null;
+        html += `<div style="background:var(--bg-input); border:1px solid var(--border); border-radius:12px; padding:14px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <span style="font-weight:800; font-size:1rem;">${escapeHTML(s)}</span>
+            <span class="badge">${share}% share</span>
+          </div>
+          <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:8px; font-size:0.82rem;">
+            <div><span style="color:var(--text-muted);">Accounts</span><br><strong>${accounts}</strong></div>
+            <div><span style="color:var(--text-muted);">Total Deposits</span><br><strong>${money(deposits)}</strong></div>
+            <div><span style="color:var(--text-muted);">Avg Deposit</span><br><strong>${money(avg)}</strong></div>
+            ${incentive !== null ? `<div><span style="color:var(--text-muted);">TD Incentive</span><br><strong class="text-success">${money(incentive)}</strong></div>` : ''}
+          </div>
+        </div>`;
+    });
+    html += '</div>';
+    const titleEl = document.getElementById('is-drill-title');
+    const bodyEl = document.getElementById('is-drill-body');
+    if (titleEl) titleEl.textContent = 'Scheme Detail Analysis';
+    if (bodyEl) bodyEl.innerHTML = html;
+    _insightsDrillData = { schemeMap, entries };
+}
+
+window.runInsightsStudio = function() {
+    const { from, to } = getInsightsDateRange();
+    const mode = document.getElementById('is-compare-mode')?.value || 'prev_period';
+    const schemeFilter = document.getElementById('is-scheme-filter')?.value || 'All';
+
+    const curr = getDataForRange(from, to, schemeFilter);
+    const compRange = getCompareRange(from, to, mode);
+    const prev = compRange ? getDataForRange(compRange.from, compRange.to, schemeFilter) : null;
+
+    window._insightsCurrentData = curr;
+
+    // KPI strip
+    document.getElementById('is-v-deposits').textContent = money(curr.totalDeposits);
+    document.getElementById('is-v-accounts').textContent = curr.totalAccounts;
+    document.getElementById('is-v-incentive').textContent = money(curr.tdIncentive);
+    document.getElementById('is-v-avg').textContent = money(curr.avgDeposit);
+    document.getElementById('is-d-deposits').innerHTML = prev ? deltaHTML(curr.totalDeposits, prev.totalDeposits, true) : '';
+    document.getElementById('is-d-accounts').innerHTML = prev ? deltaHTML(curr.totalAccounts, prev.totalAccounts, false) : '';
+    document.getElementById('is-d-incentive').innerHTML = prev ? deltaHTML(curr.tdIncentive, prev.tdIncentive, true) : '';
+    document.getElementById('is-d-avg').innerHTML = prev ? deltaHTML(curr.avgDeposit, prev.avgDeposit, true) : '';
+
+    // Trend chart
+    drawTrendChart(curr);
+
+    // Scheme performance table
+    const schemeKeys = Object.keys(curr.schemeMap).sort((a, b) => curr.schemeMap[b].deposits - curr.schemeMap[a].deposits);
+    const totalDep = curr.totalDeposits || 1;
+    let tbody = '';
+    schemeKeys.forEach(s => {
+        const { accounts, deposits } = curr.schemeMap[s];
+        const avg = accounts ? deposits / accounts : 0;
+        const share = ((deposits / totalDep) * 100).toFixed(0);
+        const prevDep = prev?.schemeMap?.[s]?.deposits ?? null;
+        let trendHtml = '<span class="is-trend-neutral">→</span>';
+        if (prevDep !== null) {
+            if (deposits > prevDep * 1.05) trendHtml = '<span class="is-trend-up">↑</span>';
+            else if (deposits < prevDep * 0.95) trendHtml = '<span class="is-trend-down">↓</span>';
+        }
+        tbody += `<tr>
+          <td><span class="badge">${escapeHTML(s)}</span></td>
+          <td class="text-right">${accounts}</td>
+          <td class="text-right">${money(deposits)}</td>
+          <td class="text-right">${money(avg)}</td>
+          <td class="text-right">${share}%</td>
+          <td class="text-center">${trendHtml}</td>
+        </tr>`;
+    });
+    document.getElementById('is-scheme-tbody').innerHTML = tbody || '<tr><td colspan="6" style="text-align:center; color:var(--text-muted); padding:24px;">No accounts found for this period.</td></tr>';
+
+    const drillBtn = document.getElementById('is-scheme-drill-btn');
+    if (drillBtn) drillBtn.style.display = schemeKeys.length ? 'inline-flex' : 'none';
+    buildSchemeDrillModal(curr.schemeMap, curr.entries);
+
+    // Portfolio chart
+    drawPortfolioChart(curr.schemeMap);
+
+    // Incentive stats
+    const tdEntriesFull = curr.entries.filter(e => ['1Y TD','2Y TD','3Y TD','5Y TD'].includes(e.scheme));
+    const bestTdTerm = ['5Y TD','3Y TD','2Y TD','1Y TD'].find(t => curr.schemeMap[t]?.accounts > 0) || 'N/A';
+    const bestTdDeposits = curr.schemeMap[bestTdTerm]?.deposits || 0;
+    const bestTdIncentive = getTdTermFromScheme(bestTdTerm) ? bestTdDeposits * (INCENTIVE_RATES[getTdTermFromScheme(bestTdTerm)] || 0) : 0;
+    const avgIncentive = tdEntriesFull.length ? curr.tdIncentive / tdEntriesFull.length : 0;
+    document.getElementById('is-incentive-stats').innerHTML = `
+      <div class="is-stat-cell"><div class="is-stat-cell-label">Current Bill</div><div class="is-stat-cell-value">${money(curr.tdIncentive)}</div></div>
+      <div class="is-stat-cell"><div class="is-stat-cell-label">Eligible Deposits</div><div class="is-stat-cell-value">${money(tdEntriesFull.reduce((s,e)=>s+(e.amt||0),0))}</div></div>
+      <div class="is-stat-cell"><div class="is-stat-cell-label">Avg per Account</div><div class="is-stat-cell-value">${money(avgIncentive)}</div><div class="is-stat-cell-note">${tdEntriesFull.length} accounts</div></div>
+      <div class="is-stat-cell"><div class="is-stat-cell-label">Best Term</div><div class="is-stat-cell-value">${escapeHTML(bestTdTerm)}</div><div class="is-stat-cell-note">${money(bestTdDeposits)} · ${money(bestTdIncentive)} incentive</div></div>
+    `;
+    drawIncentiveChart(curr);
+
+    // Pipeline
+    document.getElementById('is-pipeline-grid').innerHTML = `
+      <div class="is-pipeline-cell is-pipeline-pending"><div class="is-pipeline-cell-label">Pending AO</div><div class="is-pipeline-cell-value">${curr.pendingAO}</div></div>
+      <div class="is-pipeline-cell is-pipeline-atbo"><div class="is-pipeline-cell-label">At BO</div><div class="is-pipeline-cell-value">${curr.atBO}</div></div>
+      <div class="is-pipeline-cell is-pipeline-delivered"><div class="is-pipeline-cell-label">Delivered</div><div class="is-pipeline-cell-value">${curr.delivered}</div></div>
+    `;
+    const today = getLocalISODate();
+    const atBOList = memAccReg.filter(e => e.pbStatus === 'At BO' && e.date);
+    const avgDays = atBOList.length ? (atBOList.reduce((s,e) => s + Math.round((new Date(today) - new Date(e.date)) / 86400000), 0) / atBOList.length).toFixed(1) : 0;
+    const oldest = atBOList.length ? Math.max(...atBOList.map(e => Math.round((new Date(today) - new Date(e.date)) / 86400000))) : 0;
+    document.getElementById('is-pipeline-meta').innerHTML = `<span>Avg Time at BO: <b>${avgDays} days</b></span><span>Oldest pending: <b>${oldest} days</b></span><span>Total in registry: <b>${memAccReg.length}</b></span>`;
+
+    // Operational insights
+    const insightItems = buildInsights(curr, prev, memAccReg, from, to);
+    document.getElementById('is-insights-list').innerHTML = insightItems.map(item => `
+      <div class="is-insight-item is-insight-${item.type}">
+        <div class="is-insight-icon">${item.type === 'green' ? '🟢' : item.type === 'yellow' ? '🟡' : item.type === 'blue' ? '🔵' : '🔴'}</div>
+        <div class="is-insight-body"><div class="is-insight-title">${escapeHTML(item.title)}</div><div class="is-insight-desc">${escapeHTML(item.desc)}</div></div>
+      </div>`).join('');
+
+    lucide.createIcons();
+};
+
+window.previewCustomReport = function() {
+    const from = document.getElementById('crb-from')?.value;
+    const to = document.getElementById('crb-to')?.value;
+    if (!from || !to) { showToast('Please select a date range first.'); return; }
+    document.getElementById('is-from').value = from;
+    document.getElementById('is-to').value = to;
+    window.runInsightsStudio();
+    showToast('Report refreshed with selected date range.');
+};
+
+function initInsightsStudioFilters() {
+    const today = getLocalISODate();
+    const firstOfMonth = today.slice(0, 7) + '-01';
+    const fromEl = document.getElementById('is-from');
+    const toEl = document.getElementById('is-to');
+    const crbFrom = document.getElementById('crb-from');
+    const crbTo = document.getElementById('crb-to');
+    if (fromEl && !fromEl.value) fromEl.value = firstOfMonth;
+    if (toEl && !toEl.value) toEl.value = today;
+    if (crbFrom && !crbFrom.value) crbFrom.value = firstOfMonth;
+    if (crbTo && !crbTo.value) crbTo.value = today;
+}
 
 window.generateBOSummaryReport = function() {
     let monthInput = document.getElementById('summary-month').value;
@@ -1414,7 +2867,9 @@ window.generateAccountSummaryReport = function() {
 };
 
 window.generateReportCharts = function() {
-    const start = document.getElementById('rep-start').value; const end = document.getElementById('rep-end').value;
+    const start = document.getElementById('rep-start')?.value;
+    const end = document.getElementById('rep-end')?.value;
+    if (!start || !end) return;
     let filteredCb = memCbData.filter(d => d.date >= start && d.date <= end);
     let totRec = 0, totPay = 0; filteredCb.forEach(d => { if(d.type === 'receipt') totRec += d.amt; else totPay += d.amt; });
     
@@ -1426,8 +2881,370 @@ window.generateReportCharts = function() {
     let schemeCounts = {}; filteredLedger.forEach(d => { schemeCounts[d.scheme] = (schemeCounts[d.scheme] || 0) + 1; });
     if(repChartSchemes) repChartSchemes.destroy();
     const ctxSch = document.getElementById('rep-chart-schemes').getContext('2d');
-    repChartSchemes = new Chart(ctxSch, { type: 'doughnut', data: { labels: Object.keys(schemeCounts).length ? Object.keys(schemeCounts) : ['No Data'], datasets: [{ data: Object.values(schemeCounts).length ? Object.values(schemeCounts) : [1], backgroundColor: ['#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#6366f1'] }] }, options: { responsive: true, maintainAspectRatio: false } });
+    repChartSchemes = new Chart(ctxSch, {
+        type: 'doughnut',
+        data: {
+            labels: Object.keys(schemeCounts).length ? Object.keys(schemeCounts) : ['No Data'],
+            datasets: [{ data: Object.values(schemeCounts).length ? Object.values(schemeCounts) : [1], backgroundColor: ['#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#6366f1'] }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            onClick: (_, elements, chart) => {
+                if (!elements.length) return;
+                const label = chart.data.labels[elements[0].index];
+                const isTd = String(label || '').includes('TD');
+                renderTdDrillChart(filteredLedger, isTd);
+            }
+        }
+    });
+
+    renderTdDrillChart(filteredLedger, false);
+    renderClosingTrendline(end || getLocalISODate());
+    renderPassbookTatGraph();
+    renderYoyHeatmap(end || getLocalISODate());
+    updateInsightStudioWidgets(start, end, filteredCb, filteredLedger);
 };
+
+function getDateRange(start, end) {
+    const dates = [];
+    const s = parseLocalDate(start);
+    const e = parseLocalDate(end);
+    for (let d = new Date(s); d <= e; d.setDate(d.getDate() + 1)) dates.push(getLocalISODate(d));
+    return dates;
+}
+
+function getClosingBalanceForDate(dateStr) {
+    const opening = getOpeningBalance(dateStr);
+    const dayEntries = memCbData.filter(entry => entry.date === dateStr);
+    return dayEntries.reduce((bal, entry) => bal + (entry.type === 'receipt' ? Number(entry.amt) : -Number(entry.amt)), opening);
+}
+
+function getSchemeTargets() {
+    return JSON.parse(localStorage.getItem('schemeTargetsV1') || '{}');
+}
+
+window.saveSchemeTarget = function(scheme, value) {
+    const targets = getSchemeTargets();
+    targets[scheme] = Math.max(0, Number(value) || 0);
+    localStorage.setItem('schemeTargetsV1', JSON.stringify(targets));
+    updateInsightStudioWidgets();
+};
+
+function renderTargetBars(currentMonth, monthEntries) {
+    const container = document.getElementById('target-bars');
+    if (!container) return;
+    const targets = getSchemeTargets();
+    const schemes = ['SSA', 'RD', '1Y TD', '2Y TD', '3Y TD', '5Y TD', 'MSSC'];
+    container.innerHTML = schemes.map(scheme => {
+        const target = Math.max(0, Number(targets[scheme] || 0));
+        const achieved = monthEntries.filter(entry => entry.scheme === scheme).length;
+        const percent = target > 0 ? Math.min(100, Math.round((achieved / target) * 100)) : 0;
+        return `<div class="target-row"><div class="target-row-head"><span>${scheme}</span><span>${achieved}/${target || '-'} </span></div><div style="display:flex; gap:8px; align-items:center;"><input type="number" min="0" value="${target}" onchange="saveSchemeTarget('${scheme}', this.value)" style="width:88px;"><div class="insight-meter" style="flex:1;"><span style="width:${percent}%"></span></div></div></div>`;
+    }).join('');
+}
+
+function renderTdDrillChart(filteredLedger, showTdOnly) {
+    const canvas = document.getElementById('rep-chart-td-drill');
+    if (!canvas) return;
+    const tdSchemes = ['1Y TD', '2Y TD', '3Y TD', '5Y TD'];
+    const source = showTdOnly ? filteredLedger.filter(entry => String(entry.scheme || '').includes('TD')) : filteredLedger;
+    const counts = tdSchemes.map(s => source.filter(entry => entry.scheme === s).length);
+    const hasData = counts.some(v => v > 0);
+    if (repChartTdDrill) repChartTdDrill.destroy();
+    repChartTdDrill = new Chart(canvas.getContext('2d'), {
+        type: 'doughnut',
+        data: {
+            labels: hasData ? tdSchemes : ['No TD Data'],
+            datasets: [{ data: hasData ? counts : [1], backgroundColor: hasData ? ['#dc2626', '#2563eb', '#10b981', '#f59e0b'] : ['#cbd5e1'] }]
+        },
+        options: { responsive: true, maintainAspectRatio: false, cutout: '65%' }
+    });
+}
+
+function renderClosingTrendline(anchorDate) {
+    const canvas = document.getElementById('rep-chart-closing');
+    if (!canvas) return;
+    const end = parseLocalDate(anchorDate);
+    const labels = [];
+    const values = [];
+    for (let i = 29; i >= 0; i--) {
+        const d = new Date(end);
+        d.setDate(d.getDate() - i);
+        const iso = getLocalISODate(d);
+        labels.push(iso.slice(5));
+        values.push(getClosingBalanceForDate(iso));
+    }
+    if (repChartClosing) repChartClosing.destroy();
+    repChartClosing = new Chart(canvas.getContext('2d'), {
+        type: 'line',
+        data: { labels, datasets: [{ label: 'Closing Balance', data: values, borderColor: '#da291c', backgroundColor: 'rgba(218,41,28,0.12)', fill: true, tension: 0.3 }] },
+        options: { responsive: true, maintainAspectRatio: false }
+    });
+}
+
+function renderPassbookTatGraph() {
+    const canvas = document.getElementById('rep-chart-tat');
+    if (!canvas) return;
+    const today = new Date();
+    const pending = memAccReg.filter(entry => entry.pbStatus === 'Pending AO');
+    const atBo = memAccReg.filter(entry => entry.pbStatus === 'At BO');
+    const delivered = memAccReg.filter(entry => entry.pbStatus === 'Delivered');
+    const avgDays = entries => entries.length ? Math.round(entries.reduce((sum, entry) => sum + Math.max(0, Math.round((today - parseLocalDate(entry.date || getLocalISODate())) / (24*60*60*1000))), 0) / entries.length) : 0;
+    if (repChartTat) repChartTat.destroy();
+    repChartTat = new Chart(canvas.getContext('2d'), {
+        type: 'bar',
+        data: { labels: ['Pending AO', 'At BO', 'Delivered'], datasets: [{ label: 'Average days since opening', data: [avgDays(pending), avgDays(atBo), avgDays(delivered)], backgroundColor: ['#ef4444', '#f59e0b', '#10b981'] }] },
+        options: { responsive: true, maintainAspectRatio: false }
+    });
+}
+
+function renderYoyHeatmap(anchorDate) {
+    const container = document.getElementById('yoy-heatmap');
+    if (!container) return;
+    const [year, month] = String(anchorDate).slice(0, 7).split('-').map(Number);
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const daysInPrevYearMonth = new Date(year - 1, month, 0).getDate();
+    const countFor = (y, m, d) => memAccReg.filter(entry => entry.date === `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`).length;
+    const currentCounts = Array.from({ length: daysInMonth }, (_, i) => countFor(year, month, i + 1));
+    const prevCounts = Array.from({ length: daysInPrevYearMonth }, (_, i) => countFor(year - 1, month, i + 1));
+    const maxCount = Math.max(1, ...currentCounts, ...prevCounts);
+    const cell = count => {
+        const level = count === 0 ? '' : count / maxCount <= 0.25 ? 'l1' : count / maxCount <= 0.5 ? 'l2' : count / maxCount <= 0.75 ? 'l3' : 'l4';
+        return `<div class="heat-cell ${level}" title="${count} openings"></div>`;
+    };
+    container.innerHTML = `<div class="insight-sub" style="grid-column:1 / -1; margin-bottom:4px;">Current Year (${year})</div>${currentCounts.map(cell).join('')}<div class="insight-sub" style="grid-column:1 / -1; margin-top:8px; margin-bottom:4px;">Last Year (${year - 1})</div>${prevCounts.map(cell).join('')}`;
+}
+
+window.updateInsightStudioWidgets = function(startArg, endArg, filteredCbArg, filteredLedgerArg) {
+    const start = startArg || document.getElementById('rep-start')?.value;
+    const end = endArg || document.getElementById('rep-end')?.value;
+    if (!start || !end) return;
+    const filteredCb = filteredCbArg || memCbData.filter(entry => entry.date >= start && entry.date <= end);
+    const filteredLedger = filteredLedgerArg || memAccReg.filter(entry => entry.date >= start && entry.date <= end);
+
+    const today = new Date();
+    const currentMonth = getLocalISODate().slice(0, 7);
+    const prevMonthDate = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+    const prevMonth = `${prevMonthDate.getFullYear()}-${String(prevMonthDate.getMonth() + 1).padStart(2, '0')}`;
+    const ssaCurrent = memAccReg.filter(entry => String(entry.date || '').startsWith(currentMonth) && entry.scheme === 'SSA').length;
+    const ssaPrev = memAccReg.filter(entry => String(entry.date || '').startsWith(prevMonth) && entry.scheme === 'SSA').length;
+    const ssaDiff = ssaPrev ? Math.round(((ssaCurrent - ssaPrev) / ssaPrev) * 100) : (ssaCurrent > 0 ? 100 : 0);
+    const narrativeEl = document.getElementById('insight-narrative');
+    if (narrativeEl) narrativeEl.textContent = `You opened ${ssaCurrent} Sukanya Samriddhi (SSA) accounts this month, ${ssaDiff >= 0 ? `${ssaDiff}% higher` : `${Math.abs(ssaDiff)}% lower`} than last month.`;
+
+    const cashLimit = Math.max(1, Number(document.getElementById('cash-limit-input')?.value || 100000));
+    const latestClosing = getClosingBalanceForDate(end);
+    const limitPct = Math.max(0, Math.min(100, Math.round((latestClosing / cashLimit) * 100)));
+    const cashFill = document.getElementById('cash-limit-fill');
+    const cashText = document.getElementById('cash-limit-text');
+    if (cashFill) cashFill.style.width = `${limitPct}%`;
+    if (cashText) cashText.textContent = `Current: ${money(latestClosing)} of limit ${money(cashLimit)} (${limitPct}%). ${limitPct >= 90 ? 'Remittance recommended.' : ''}`;
+
+    const pendingOld = memAccReg.filter(entry => entry.pbStatus === 'Pending AO' && entry.date && (today - parseLocalDate(entry.date)) / (24*60*60*1000) > 14).length;
+    const alerts = [];
+    alerts.push(`<div class="insight-pill">Pending AO >14 days: <strong>${pendingOld}</strong></div>`);
+
+    const allDates = getDateRange(start, end);
+    const zeroEntryDays = allDates.filter(date => !memCbData.some(entry => entry.date === date));
+    const withdrawals = filteredCb.filter(entry => entry.type === 'payment').map(entry => Number(entry.amt) || 0).sort((a,b)=>a-b);
+    const withdrawalThreshold = withdrawals.length ? Math.max(50000, withdrawals[Math.floor(withdrawals.length * 0.95)] || 0) : 50000;
+    const hugeWithdrawals = filteredCb.filter(entry => entry.type === 'payment' && Number(entry.amt) >= withdrawalThreshold);
+    alerts.push(`<div class="insight-pill">Zero-entry cashbook days: <strong>${zeroEntryDays.length}</strong></div>`);
+    alerts.push(`<div class="insight-pill">Unusually high withdrawals: <strong>${hugeWithdrawals.length}</strong></div>`);
+    const alertsEl = document.getElementById('insight-alerts');
+    if (alertsEl) alertsEl.innerHTML = alerts.join('');
+
+    const completeKyc = memAccReg.filter(entry => entry.phone && entry.aadhaar && entry.pan).length;
+    const totalLedger = memAccReg.length || 1;
+    const kycPct = Math.round((completeKyc / totalLedger) * 100);
+    const kycScore = document.getElementById('kyc-score');
+    const kycFill = document.getElementById('kyc-fill');
+    const kycText = document.getElementById('kyc-text');
+    if (kycScore) kycScore.textContent = `${kycPct}%`;
+    if (kycFill) kycFill.style.width = `${kycPct}%`;
+    if (kycText) kycText.textContent = `${completeKyc} of ${memAccReg.length} entries have Phone + Aadhaar + PAN.`;
+
+    const monthEntries = memAccReg.filter(entry => String(entry.date || '').startsWith(currentMonth));
+    renderTargetBars(currentMonth, monthEntries);
+
+    const tdLedgerEntries = filteredLedger.filter(entry => {
+        const term = getTdTermFromScheme(entry.scheme);
+        return term !== null && Number(entry.amt) > 0;
+    });
+    const tdSchemeSummary = [
+        { label: '1Y TD', term: 1 },
+        { label: '2Y TD', term: 2 },
+        { label: '3Y TD', term: 3 },
+        { label: '5Y TD', term: 5 }
+    ].map(item => {
+        const rows = tdLedgerEntries.filter(entry => getTdTermFromScheme(entry.scheme) === item.term);
+        const depositTotal = rows.reduce((sum, entry) => sum + (Number(entry.amt) || 0), 0);
+        const incentiveTotal = rows.reduce((sum, entry) => sum + Math.round((Number(entry.amt) || 0) * (INCENTIVE_RATES[item.term] || 0)), 0);
+        return { ...item, count: rows.length, depositTotal, incentiveTotal };
+    });
+    const predictedTdIncentive = tdSchemeSummary.reduce((sum, item) => sum + item.incentiveTotal, 0);
+    const predictor = document.getElementById('incentive-predictor');
+    if (predictor) {
+        if (!tdLedgerEntries.length) {
+            predictor.innerHTML = '<div class="insight-pill">No TD ledger entries in this period to predict incentive.</div>';
+        } else {
+            predictor.innerHTML = [
+                ...tdSchemeSummary.map(item => `<div class="insight-pill">${item.label}: <strong>${money(item.incentiveTotal)}</strong> <span style="color:var(--text-muted);">(${item.count} account${item.count === 1 ? '' : 's'} · ${money(item.depositTotal)} deposits)</span></div>`),
+                `<div class="insight-pill">Predicted TD Incentive (Ledger): <strong>${money(predictedTdIncentive)}</strong></div>`
+            ].join('');
+        }
+    }
+
+    const dayOfMonth = today.getDate();
+    const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+    const expectedByNow = Math.round((dayOfMonth / daysInMonth) * monthEntries.length);
+    const pace = monthEntries.length >= expectedByNow ? (monthEntries.length >= expectedByNow + 3 ? 'Ahead' : 'On Track') : 'Falling Behind';
+    const paceEl = document.getElementById('pace-indicator');
+    if (paceEl) paceEl.textContent = `Status: ${pace}. Openings this month: ${monthEntries.length}.`;
+
+    const nextMonthDate = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+    const nextMonthStart = `${nextMonthDate.getFullYear()}-${String(nextMonthDate.getMonth() + 1).padStart(2, '0')}-01`;
+    const nextMonthEndDate = new Date(nextMonthDate.getFullYear(), nextMonthDate.getMonth() + 1, 0);
+    const nextMonthEnd = `${nextMonthEndDate.getFullYear()}-${String(nextMonthEndDate.getMonth() + 1).padStart(2, '0')}-${String(nextMonthEndDate.getDate()).padStart(2, '0')}`;
+    const maturityItems = memAccReg.filter(entry => ['1Y TD', '2Y TD', '3Y TD', '5Y TD'].includes(entry.scheme)).map(entry => {
+        const years = Number(String(entry.scheme).slice(0, 1));
+        const maturity = addYearsToDateStr(entry.date, years);
+        return { ...entry, maturity };
+    }).filter(entry => entry.maturity >= nextMonthStart && entry.maturity <= nextMonthEnd).sort((a,b)=>a.maturity.localeCompare(b.maturity));
+    const maturityEl = document.getElementById('maturity-forecast');
+    if (maturityEl) maturityEl.innerHTML = maturityItems.length ? maturityItems.slice(0, 10).map(entry => `<div class="insight-pill">${entry.maturity} • ${escapeHTML(entry.name)} • ${escapeHTML(entry.scheme)} • ${money(entry.amt)}</div>`).join('') : '<div class="insight-pill">No TD maturities expected next month.</div>';
+
+    const anomalyEl = document.getElementById('anomaly-list');
+    if (anomalyEl) {
+        const anomalyRows = [];
+        if (zeroEntryDays.length) anomalyRows.push(`<div class="insight-pill">Zero cashbook activity days: ${zeroEntryDays.slice(0, 6).join(', ')}${zeroEntryDays.length > 6 ? ' ...' : ''}</div>`);
+        if (hugeWithdrawals.length) anomalyRows.push(`<div class="insight-pill">High withdrawals (>= ${money(withdrawalThreshold)}): ${hugeWithdrawals.slice(0, 6).map(entry => `${entry.date} ${money(entry.amt)}`).join(' | ')}${hugeWithdrawals.length > 6 ? ' ...' : ''}</div>`);
+        anomalyEl.innerHTML = anomalyRows.length ? anomalyRows.join('') : '<div class="insight-pill">No anomalies detected in selected range.</div>';
+    }
+};
+
+window.runCampaignTracker = function() {
+    const start = document.getElementById('campaign-start')?.value;
+    const end = document.getElementById('campaign-end')?.value;
+    if (!start || !end) return;
+    const entries = memAccReg.filter(entry => entry.date >= start && entry.date <= end);
+    const deposits = entries.reduce((sum, entry) => sum + (Number(entry.amt) || 0), 0);
+    const schemes = entries.reduce((acc, entry) => { acc[entry.scheme] = (acc[entry.scheme] || 0) + 1; return acc; }, {});
+    const topScheme = Object.entries(schemes).sort((a,b)=>b[1]-a[1])[0];
+    const target = document.getElementById('campaign-results');
+    if (target) target.innerHTML = `<div class="insight-pill">Accounts opened: <strong>${entries.length}</strong></div><div class="insight-pill">Deposit mobilized: <strong>${money(deposits)}</strong></div><div class="insight-pill">Top scheme: <strong>${topScheme ? `${topScheme[0]} (${topScheme[1]})` : 'N/A'}</strong></div>`;
+};
+
+window.runCustomBenchmark = function() {
+    const aStart = document.getElementById('bench-a-start')?.value;
+    const aEnd = document.getElementById('bench-a-end')?.value;
+    const bStart = document.getElementById('bench-b-start')?.value;
+    const bEnd = document.getElementById('bench-b-end')?.value;
+    if (!aStart || !aEnd || !bStart || !bEnd) return;
+    const periodStats = (start, end) => {
+        const ledger = memAccReg.filter(entry => entry.date >= start && entry.date <= end);
+        const cb = memCbData.filter(entry => entry.date >= start && entry.date <= end);
+        return {
+            accounts: ledger.length,
+            deposits: ledger.reduce((sum, entry) => sum + (Number(entry.amt) || 0), 0),
+            receipts: cb.filter(entry => entry.type === 'receipt').reduce((sum, entry) => sum + (Number(entry.amt) || 0), 0),
+            payments: cb.filter(entry => entry.type === 'payment').reduce((sum, entry) => sum + (Number(entry.amt) || 0), 0)
+        };
+    };
+    const a = periodStats(aStart, aEnd);
+    const b = periodStats(bStart, bEnd);
+    const target = document.getElementById('benchmark-results');
+    if (target) target.innerHTML = `<div class="insight-pill">Accounts: A ${a.accounts} vs B ${b.accounts}</div><div class="insight-pill">Deposits: A ${money(a.deposits)} vs B ${money(b.deposits)}</div><div class="insight-pill">Receipts: A ${money(a.receipts)} vs B ${money(b.receipts)}</div><div class="insight-pill">Payments: A ${money(a.payments)} vs B ${money(b.payments)}</div>`;
+};
+
+window.generateUnifiedMasterReport = async function() {
+    const start = document.getElementById('rep-start')?.value;
+    const end = document.getElementById('rep-end')?.value;
+    if (!start || !end) return alert('Select a date range first.');
+    const cb = memCbData.filter(entry => entry.date >= start && entry.date <= end);
+    const ledger = memAccReg.filter(entry => entry.date >= start && entry.date <= end);
+    const wrapper = document.createElement('div');
+    wrapper.id = 'master-report-wrap';
+    wrapper.style.cssText = 'background:#fff;color:#111;padding:20px;font-family:Inter, sans-serif;max-width:980px;';
+    const rec = cb.filter(entry => entry.type === 'receipt').reduce((sum, entry) => sum + (Number(entry.amt) || 0), 0);
+    const pay = cb.filter(entry => entry.type === 'payment').reduce((sum, entry) => sum + (Number(entry.amt) || 0), 0);
+    wrapper.innerHTML = `
+      <h2 style="margin:0 0 8px;">Unified Master Report</h2>
+      <div style="margin-bottom:14px;">Period: ${start} to ${end} | Branch: ${escapeHTML(globalBoName)}</div>
+      <h3>Cashbook Summary</h3>
+      <table style="width:100%; border-collapse:collapse; margin-bottom:16px;"><tr><th style="border:1px solid #ddd; padding:8px;">Total Receipts</th><th style="border:1px solid #ddd; padding:8px;">Total Payments</th><th style="border:1px solid #ddd; padding:8px;">Net</th></tr><tr><td style="border:1px solid #ddd; padding:8px;">${money(rec)}</td><td style="border:1px solid #ddd; padding:8px;">${money(pay)}</td><td style="border:1px solid #ddd; padding:8px;">${money(rec - pay)}</td></tr></table>
+      <h3>Ledger Summary</h3>
+      <table style="width:100%; border-collapse:collapse; margin-bottom:16px;"><tr><th style="border:1px solid #ddd; padding:8px;">Accounts Opened</th><th style="border:1px solid #ddd; padding:8px;">Deposit Mobilized</th><th style="border:1px solid #ddd; padding:8px;">Pending AO</th></tr><tr><td style="border:1px solid #ddd; padding:8px;">${ledger.length}</td><td style="border:1px solid #ddd; padding:8px;">${money(ledger.reduce((s,e)=>s+(Number(e.amt)||0),0))}</td><td style="border:1px solid #ddd; padding:8px;">${ledger.filter(e=>e.pbStatus==='Pending AO').length}</td></tr></table>
+      <h3>Manual Overrides / Audit</h3>
+      <div style="margin-bottom:10px;">Overrides in range: ${Object.keys(memOverrides).filter(date => date >= start && date <= end).length}</div>
+      <div style="font-size:12px; color:#444;">Generated on ${new Date().toLocaleString('en-IN')}</div>
+    `;
+    document.body.appendChild(wrapper);
+    try {
+        await window.exportModulePDF('master-report-wrap', `Unified_Master_Report_${start}_to_${end}`);
+        localStorage.setItem('lastMasterReportArchivedMonth', end.slice(0, 7));
+    } finally {
+        wrapper.remove();
+    }
+};
+
+window.forwardMasterReportWhatsApp = function() {
+    const start = document.getElementById('rep-start')?.value;
+    const end = document.getElementById('rep-end')?.value;
+    const msg = `Unified Master Report ready for ${globalBoName} (${start || 'N/A'} to ${end || 'N/A'}). Please find the PDF attached.`;
+    window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`);
+};
+
+window.exportPivotReadyData = function() {
+    const rows = [];
+    memCbData.forEach(entry => rows.push({
+        record_type: 'cashbook', date: entry.date, flow_type: entry.type, scheme: (entry.desc || '').replace(/\[|\]/g, ''),
+        amount: Number(entry.amt) || 0, account_no: '', customer_name: '', pr_no: '', passbook_status: ''
+    }));
+    memAccReg.forEach(entry => rows.push({
+        record_type: 'ledger', date: entry.date, flow_type: 'account_opening', scheme: entry.scheme || '',
+        amount: Number(entry.amt) || 0, account_no: entry.acc || '', customer_name: entry.name || '', pr_no: entry.prNo || '', passbook_status: entry.pbStatus || ''
+    }));
+    const headers = ['record_type', 'date', 'flow_type', 'scheme', 'amount', 'account_no', 'customer_name', 'pr_no', 'passbook_status'];
+    const csv = [headers.join(','), ...rows.map(row => headers.map(h => `"${String(row[h] ?? '').replace(/"/g, '""')}"`).join(','))].join('\n');
+    const blob = new Blob(['\uFEFF', csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = createExportFilename('Pivot_Ready_Data_Dump', 'csv');
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+};
+
+window.openInspectorAuditView = function() {
+    const body = document.getElementById('inspectorAuditBody');
+    const modal = document.getElementById('inspectorAuditModal');
+    if (!body || !modal) return;
+    const overrides = Object.entries(memOverrides).sort((a, b) => b[0].localeCompare(a[0]));
+    body.innerHTML = `
+      <div class="insight-card" style="margin-bottom:12px;"><h3><i data-lucide="history"></i> Audit Trail</h3>${memAuditLog.slice(0, 150).map(item => `<div class="insight-pill">${escapeHTML(item.at)} • ${escapeHTML(item.action)} • ${escapeHTML(item.module)} • ${escapeHTML(item.details || '')}</div>`).join('') || '<div class="insight-pill">No audit entries.</div>'}</div>
+      <div class="insight-card"><h3><i data-lucide="alert-triangle"></i> Manual Overrides</h3>${overrides.map(([date, amount]) => `<div class="insight-pill">${escapeHTML(date)} → ${money(amount)}</div>`).join('') || '<div class="insight-pill">No manual overrides.</div>'}</div>
+    `;
+    modal.style.display = 'flex';
+    lucide.createIcons();
+};
+
+window.closeInspectorAuditView = function() {
+    const modal = document.getElementById('inspectorAuditModal');
+    if (modal) modal.style.display = 'none';
+};
+
+function checkMonthlyMasterReportReminder() {
+    const now = new Date();
+    if (now.getDate() !== 1) return;
+    const prevMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const prevMonth = `${prevMonthDate.getFullYear()}-${String(prevMonthDate.getMonth() + 1).padStart(2, '0')}`;
+    const archived = localStorage.getItem('lastMasterReportArchivedMonth');
+    if (archived !== prevMonth) showToast(`Reminder: Archive last month's Unified Master Report (${prevMonth}).`);
+}
 
 // --------------------------------------------------------------------------------------
 // BACKUP & DASHBOARD
@@ -1436,6 +3253,7 @@ function renderDashboard() {
     let tdTotalInc = memTdEntries.reduce((s,e)=>s+e.incentive,0);
     const now = new Date();
     const todayStr = getLocalISODate(now);
+    const bpmDisplayName = globalBpmName || document.getElementById('bpmName')?.value || 'Branch Postmaster';
     const closedReason = getClosedDayReason(todayStr);
     const todayEntries = memCbData.filter(entry => entry.date === todayStr);
     const todayBalance = todayEntries.reduce((balance, entry) => balance + (entry.type === 'receipt' ? Number(entry.amt) : -Number(entry.amt)), getOpeningBalance(todayStr));
@@ -1445,6 +3263,9 @@ function renderDashboard() {
     const cashAction = document.getElementById('dash-cash-action');
     const statusText = document.getElementById('dash-status-text');
     const statusIndicator = document.getElementById('dash-status-indicator');
+    const todayReceipts = todayEntries.reduce((sum, entry) => sum + (entry.type === 'receipt' ? Number(entry.amt) : 0), 0);
+    const todayPayments = todayEntries.reduce((sum, entry) => sum + (entry.type === 'payment' ? Number(entry.amt) : 0), 0);
+    const todayNet = todayReceipts - todayPayments;
 
     if (closedReason) {
         cashBalanceEl.textContent = '₹ **,***.**';
@@ -1473,11 +3294,87 @@ function renderDashboard() {
         }
         statusIndicator.style.boxShadow = `0 0 8px ${statusIndicator.style.background}`;
     }
+    const dashBpmName = document.getElementById('dash-bpm-name');
+    if (dashBpmName) dashBpmName.textContent = bpmDisplayName;
     document.getElementById('dashAccCount').textContent = memAccReg.length;
+    document.getElementById('dashReminderCount').textContent = memReminders.length;
     document.getElementById('dash-date-display').textContent = now.toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
     
     let currentMonth = todayStr.slice(0, 7); let schemeCountsMonth = {};
-    memAccReg.forEach(d => { if(d.date.startsWith(currentMonth)) schemeCountsMonth[d.scheme] = (schemeCountsMonth[d.scheme] || 0) + 1; });
+    memAccReg.forEach(d => { if(String(d.date || '').startsWith(currentMonth)) schemeCountsMonth[d.scheme] = (schemeCountsMonth[d.scheme] || 0) + 1; });
+    const monthEntries = memAccReg.filter(d => String(d.date || '').startsWith(currentMonth));
+    const monthDeposits = monthEntries.reduce((sum, entry) => sum + (Number(entry.amt) || 0), 0);
+    const tdCount = monthEntries.filter(entry => String(entry.scheme || '').includes('TD')).length;
+    const rdCount = monthEntries.filter(entry => entry.scheme === 'RD').length;
+    const ssaCount = monthEntries.filter(entry => entry.scheme === 'SSA').length;
+    const pendingPassbooks = memAccReg.filter(entry => entry.pbStatus === 'Pending AO').length;
+    const todayState = memCbStates[todayStr] || {};
+    const closeSteps = [todayEntries.length > 0, !!todayState.saved, !!todayState.tallyLocked];
+    const eodPercent = closedReason ? 0 : Math.round((closeSteps.filter(Boolean).length / closeSteps.length) * 100);
+    const schemeSummary = document.getElementById('dash-scheme-summary');
+    const ring = document.getElementById('dash-eod-ring');
+    if (ring) ring.style.strokeDashoffset = String(314.16 - (314.16 * eodPercent / 100));
+    document.getElementById('dash-eod-pct').textContent = `${eodPercent}%`;
+    document.getElementById('dash-eod-note').textContent = closedReason ? `Day-close activity is unavailable: ${closedReason}.` : `${closeSteps.filter(Boolean).length} of ${closeSteps.length} day-close checks completed.`;
+    document.getElementById('dash-pending-passbooks').textContent = `${pendingPassbooks} passbook${pendingPassbooks === 1 ? '' : 's'} pending`;
+    document.getElementById('dash-month-accounts').textContent = `${monthEntries.length} this month`;
+    document.getElementById('dash-ssa-count').textContent = `${ssaCount} account${ssaCount === 1 ? '' : 's'}`;
+    document.getElementById('dash-rd-count').textContent = `${rdCount} account${rdCount === 1 ? '' : 's'}`;
+    document.getElementById('dash-td-count').textContent = `${tdCount} account${tdCount === 1 ? '' : 's'}`;
+    const recEl = document.getElementById('dash-today-rec');
+    const payEl = document.getElementById('dash-today-pay');
+    const netEl = document.getElementById('dash-today-net');
+    const monthDepEl = document.getElementById('dash-month-deposits');
+    const tdIncEl = document.getElementById('dash-td-total-inc');
+    const backupAgeEl = document.getElementById('dash-backup-age');
+    const backupNoteEl = document.getElementById('dash-backup-note');
+    if (recEl) recEl.textContent = money(todayReceipts);
+    if (payEl) payEl.textContent = money(todayPayments);
+    if (netEl) {
+        netEl.textContent = money(todayNet);
+        netEl.style.color = todayNet >= 0 ? 'var(--success)' : 'var(--danger)';
+    }
+    if (monthDepEl) monthDepEl.textContent = money(monthDeposits);
+    if (tdIncEl) tdIncEl.textContent = money(tdTotalInc);
+
+    const lastBackup = localStorage.getItem('lastBackupDate');
+    if (backupAgeEl && backupNoteEl) {
+        if (lastBackup) {
+            const daysSinceBackup = Math.floor((Date.now() - Number(lastBackup)) / (24 * 60 * 60 * 1000));
+            if (daysSinceBackup <= 1) {
+                backupAgeEl.textContent = 'Backup: recent';
+                backupAgeEl.className = 'omni-backup-badge good';
+                backupNoteEl.textContent = 'Data backup is healthy.';
+            } else if (daysSinceBackup <= 7) {
+                backupAgeEl.textContent = `Backup: ${daysSinceBackup} days ago`;
+                backupAgeEl.className = 'omni-backup-badge warn';
+                backupNoteEl.textContent = 'Consider downloading a fresh backup this week.';
+            } else {
+                backupAgeEl.textContent = `Backup: ${daysSinceBackup} days ago`;
+                backupAgeEl.className = 'omni-backup-badge danger';
+                backupNoteEl.textContent = 'Backup is stale. Export a full backup soon.';
+            }
+        } else {
+            backupAgeEl.textContent = 'No backup yet';
+            backupAgeEl.className = 'omni-backup-badge danger';
+            backupNoteEl.textContent = 'No backup has been recorded for this device.';
+        }
+    }
+
+    if (schemeSummary) {
+        const groupedSchemes = monthEntries.reduce((totals, entry) => {
+            const scheme = String(entry.scheme || 'Other');
+            const label = scheme.includes('TD') ? 'TD' : scheme;
+            totals[label] = (totals[label] || 0) + 1;
+            return totals;
+        }, {});
+        const orderedSchemes = Object.entries(groupedSchemes).sort((a, b) => b[1] - a[1]);
+        const maxSchemeCount = Math.max(...orderedSchemes.map(([, count]) => count), 1);
+        const barColors = { SB: 'blue', RD: 'green', TD: 'red', SSA: 'pink' };
+        schemeSummary.innerHTML = orderedSchemes.length
+            ? orderedSchemes.map(([scheme, count]) => `<div class="omni-scheme-bar-row"><div><span>${escapeHTML(scheme)}</span><strong>${count}</strong></div><div class="omni-scheme-bar-track"><span class="${barColors[scheme] || 'gold'}" style="width:${Math.max((count / maxSchemeCount) * 100, 8)}%"></span></div></div>`).join('')
+            : '<div class="omni-scheme-empty">No accounts opened this month yet.</div>';
+    }
     
     if(dashChartSchemes) dashChartSchemes.destroy();
     const ctxSchDash = document.getElementById('chartSchemesMonthly').getContext('2d');
@@ -1486,7 +3383,20 @@ function renderDashboard() {
     if(tdChart) tdChart.destroy();
     const ctx1 = document.getElementById('chartIncentive').getContext('2d');
     const tdMap = { '1':0, '2':0, '3':0, '5':0 }; memTdEntries.forEach(e => tdMap[e.term] += e.incentive);
-    tdChart = new Chart(ctx1, { type: 'bar', data: { labels: ['1 Yr', '2 Yr', '3 Yr', '5 Yr'], datasets: [{ label: 'Incentive (₹)', data: [tdMap['1'], tdMap['2'], tdMap['3'], tdMap['5']], backgroundColor: '#da291c', borderRadius: 4 }] }, options: { responsive: true, maintainAspectRatio: false } });
+    const tdValues = [tdMap['1'], tdMap['2'], tdMap['3'], tdMap['5']];
+    const hasTdData = tdValues.some(v => Number(v) > 0);
+    tdChart = new Chart(ctx1, {
+        type: 'doughnut',
+        data: {
+            labels: hasTdData ? ['1 Yr', '2 Yr', '3 Yr', '5 Yr'] : ['No Data'],
+            datasets: [{
+                label: 'Incentive (₹)',
+                data: hasTdData ? tdValues : [1],
+                backgroundColor: hasTdData ? ['#da291c', '#2563eb', '#10b981', '#f59e0b'] : ['#cbd5e1']
+            }]
+        },
+        options: { responsive: true, maintainAspectRatio: false, cutout: '70%' }
+    });
 }
 
 function checkBackupReminder() {
@@ -1513,6 +3423,23 @@ window.importDataBackup = function(event) {
       alert("✅ Data Restored! Refreshing application..."); window.location.reload(); 
     } catch(err) { alert("❌ Error loading backup. Invalid JSON file."); }
   }; reader.readAsText(file);
+};
+
+window.resetAllAppData = async function() {
+    const confirmReset = confirm('This will permanently delete ALL app data (cashbook, register, bills, reminders, holidays, settings, history). Continue?');
+    if (!confirmReset) return;
+
+    const secondConfirm = confirm('Final confirmation: Reset all data now? This action cannot be undone.');
+    if (!secondConfirm) return;
+
+    try {
+        await localforage.clear();
+        localStorage.removeItem('lastBackupDate');
+        alert('All app data has been reset. The app will now reload.');
+        window.location.reload();
+    } catch (err) {
+        alert('Failed to reset app data. Please try again.');
+    }
 };
 
 document.addEventListener('DOMContentLoaded', initApp);
