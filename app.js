@@ -139,7 +139,10 @@ window.exportModulePDF = async function(elementId, moduleName) {
     if(!el) return;
     window.scrollTo(0, 0); document.body.classList.add('exporting-pdf');
     try {
-        const canvas = await html2canvas(el, { scale: 2, useCORS: true, logging: false });
+        // Long-form master reports can exceed the browser canvas height at 2× scale.
+        // Export them at 1× so every page is retained; standard module exports stay high-resolution.
+        const exportScale = elementId === 'master-report-wrap' ? 1 : 2;
+        const canvas = await html2canvas(el, { scale: exportScale, useCORS: true, logging: false });
         const imgData = canvas.toDataURL('image/png');
         const { jsPDF } = window.jspdf; const pdf = new jsPDF('p', 'mm', 'a4');
         const pdfWidth = pdf.internal.pageSize.getWidth();
@@ -1151,11 +1154,86 @@ function initCashBook() {
     loadCashBookDate(); checkTallyDate(); renderCashHistory();
 }
 
+function getTreasuryHoldingValues(date, closingBalance) {
+    const holdings = memCbStates[date]?.treasuryHoldings || {};
+    return {
+        cash: Math.max(0, Number(closingBalance) || 0),
+        postage: Math.max(0, Number(holdings.postage) || 0),
+        revenue: Math.max(0, Number(holdings.revenue) || 0),
+        stationery: Math.max(0, Number(holdings.stationery) || 0)
+    };
+}
+
+function updateTreasurySummary() {
+    const cash = Math.max(0, Number(document.getElementById('cb-treasury-cash')?.value) || 0);
+    const postage = Math.max(0, Number(document.getElementById('cb-treasury-postage')?.value) || 0);
+    const revenue = Math.max(0, Number(document.getElementById('cb-treasury-revenue')?.value) || 0);
+    const stationery = Math.max(0, Number(document.getElementById('cb-treasury-stationery')?.value) || 0);
+    const totalEl = document.getElementById('cb-treasury-total');
+    if (totalEl) totalEl.textContent = money(cash + postage + revenue + stationery);
+    renderTreasuryReconciliation();
+}
+
+function renderTreasuryReconciliation() {
+    const date = document.getElementById('cb-main-date')?.value;
+    const bookCash = Number(document.getElementById('cb-cur-bal')?.textContent?.replace(/[^\d.-]/g, '')) || 0;
+    const notes = [500,200,100,50,20,10,5,2,1];
+    const physicalCash = notes.reduce((sum, denom) => sum + (Number(document.getElementById(`c-${denom}`)?.value) || 0) * denom, 0);
+    const hasPhysicalTally = notes.some(denom => Number(document.getElementById(`c-${denom}`)?.value) > 0) || Boolean(memTallyHist.find(t => t.date === date));
+    const stockValue = ['cb-treasury-postage', 'cb-treasury-revenue', 'cb-treasury-stationery']
+        .reduce((sum, id) => sum + Math.max(0, Number(document.getElementById(id)?.value) || 0), 0);
+    const remittance = memCbData
+        .filter(entry => entry.date === date && entry.type === 'payment' && String(entry.desc || '').includes('[Remittance to AO]'))
+        .reduce((sum, entry) => sum + (Number(entry.amt) || 0), 0);
+    const difference = physicalCash - bookCash;
+    const setText = (id, value) => { const el = document.getElementById(id); if (el) el.textContent = value; };
+    setText('cb-recon-book-cash', money(bookCash));
+    setText('cb-recon-physical-cash', money(physicalCash));
+    setText('cb-recon-stock', money(stockValue));
+    setText('cb-recon-remittance', money(remittance));
+
+    const status = document.getElementById('cb-recon-status');
+    const differenceEl = document.getElementById('cb-recon-difference');
+    const note = document.getElementById('cb-recon-note');
+    if (!status || !differenceEl || !note) return;
+    if (!hasPhysicalTally) {
+        status.textContent = 'Awaiting physical tally'; status.style.background = '#fef3c7'; status.style.color = '#92400e';
+        differenceEl.textContent = '—'; differenceEl.style.color = 'var(--text-muted)';
+        note.textContent = `Record denomination counts to compare against the cash-book closing balance. Remittance to AO is calculated from today's payment entries.`;
+    } else if (Math.abs(difference) < 0.005) {
+        status.textContent = '✓ Cash matched'; status.style.background = '#dcfce7'; status.style.color = '#166534';
+        differenceEl.textContent = money(0); differenceEl.style.color = 'var(--success)';
+        note.textContent = `Physical cash matches the cash book. Stock holdings: ${money(stockValue)}; remittance recorded today: ${money(remittance)}.`;
+    } else {
+        const isExcess = difference > 0;
+        status.textContent = isExcess ? '⚠ Cash excess' : '⚠ Cash shortage'; status.style.background = '#fee2e2'; status.style.color = '#991b1b';
+        differenceEl.textContent = `${isExcess ? '+' : '−'}${money(Math.abs(difference))}`; differenceEl.style.color = 'var(--danger)';
+        note.textContent = `Physical cash is ${isExcess ? 'higher' : 'lower'} than the cash-book closing balance by ${money(Math.abs(difference))}. Verify denominations and remittance entries before day end.`;
+    }
+}
+
+let treasurySaveTimer = null;
+function queueTreasurySave() {
+    window.clearTimeout(treasurySaveTimer);
+    treasurySaveTimer = window.setTimeout(async () => {
+        const date = document.getElementById('cb-main-date')?.value;
+        if (!date) return;
+        if (!memCbStates[date]) memCbStates[date] = {};
+        memCbStates[date].treasuryHoldings = {
+            postage: Math.max(0, Number(document.getElementById('cb-treasury-postage')?.value) || 0),
+            revenue: Math.max(0, Number(document.getElementById('cb-treasury-revenue')?.value) || 0),
+            stationery: Math.max(0, Number(document.getElementById('cb-treasury-stationery')?.value) || 0)
+        };
+        await localforage.setItem('cashBookStatesV2', memCbStates);
+    }, 350);
+}
+
 function loadCashBookDate() {
     let selectedDate = document.getElementById('cb-main-date').value;
     let cbState = memCbStates[selectedDate] || {};
     let treasuryState = getTreasuryWorkflowState(selectedDate);
     document.getElementById('cb-boda-remark').value = memCbStates[selectedDate]?.bodaRemark || "";
+    document.getElementById('cb-ao-dispatch').value = memCbStates[selectedDate]?.aoDispatch || "";
     setTreasuryBanner(treasuryState.isHoliday ? `No transactions today. ${treasuryState.closedReason}.` : '');
     if (!memCbStates[selectedDate]?.cashVerified) {
         let prevTallies = memTallyHist.filter(t => t.date < selectedDate).sort((a,b)=>a.date.localeCompare(b.date));
@@ -1171,7 +1249,9 @@ function loadCashBookDate() {
     todayEntries.forEach(d => { if (d.type === 'receipt') { running += d.amt; totRec += d.amt; } else { running -= d.amt; totPay += d.amt; } d.balance = running; });
     
     document.getElementById('cb-op-bal').textContent = money(opBal); document.getElementById('cb-tot-rec').textContent = money(totRec); document.getElementById('cb-tot-pay').textContent = money(totPay); document.getElementById('cb-cur-bal').textContent = money(running);
-    document.getElementById('cb-table-body').innerHTML = todayEntries.map(d => `<tr><td style="text-align:left;">${escapeHTML(d.desc)}</td><td class="text-right text-success">${d.type==='receipt'?money(d.amt):'-'}</td><td class="text-right text-danger">${d.type==='payment'?money(d.amt):'-'}</td><td class="text-right" style="font-weight:600;">${money(d.balance)}</td><td class="no-print text-right"><button class="btn-icon" onclick="deleteCbRow(${d.id})"><i data-lucide="x"></i></button></td></tr>`).join('');
+    const searchTerm = (document.getElementById('cb-search')?.value || '').trim().toLowerCase();
+    const visibleEntries = searchTerm ? todayEntries.filter(d => String(d.desc || '').toLowerCase().includes(searchTerm)) : todayEntries;
+    document.getElementById('cb-table-body').innerHTML = visibleEntries.map(d => `<tr><td style="text-align:left;">${escapeHTML(d.desc)}</td><td class="text-right text-success">${d.type==='receipt'?money(d.amt):'-'}</td><td class="text-right text-danger">${d.type==='payment'?money(d.amt):'-'}</td><td class="text-right" style="font-weight:600;">${money(d.balance)}</td><td class="no-print text-right">${treasuryState.isSaved || treasuryState.isLocked ? '' : `<button class="btn-icon" onclick="deleteCbRow(${d.id})"><i data-lucide="x"></i></button>`}</td></tr>`).join('') || '<tr><td colspan="5" class="text-center" style="padding:24px; color:var(--text-muted);">No matching entries.</td></tr>';
     lucide.createIcons();
 
     const treasuryHeroOpen = document.getElementById('treasury-hero-open');
@@ -1179,7 +1259,22 @@ function loadCashBookDate() {
     const treasuryHeroPhysical = document.getElementById('treasury-hero-physical');
     const treasuryHeroStatus = document.getElementById('treasury-hero-status');
     const treasuryHeroNote = document.getElementById('treasury-hero-note');
-    const physicalCash = [500,200,100,50,20,10,5,2,1].reduce((sum, denom) => sum + (Number(document.getElementById(`c-${denom}`)?.value || 0) * denom), 0);
+    const savedTally = memTallyHist.find(t => t.date === selectedDate);
+    [500,200,100,50,20,10,5,2,1].forEach(denom => {
+        const input = document.getElementById(`c-${denom}`);
+        if (input) input.value = savedTally?.notes?.[denom] || '';
+    });
+    const physicalCash = savedTally?.total ?? [500,200,100,50,20,10,5,2,1].reduce((sum, denom) => sum + (Number(document.getElementById(`c-${denom}`)?.value || 0) * denom), 0);
+    const holdings = getTreasuryHoldingValues(selectedDate, running);
+    document.getElementById('cb-treasury-cash').value = holdings.cash;
+    document.getElementById('cb-treasury-postage').value = holdings.postage || '';
+    document.getElementById('cb-treasury-revenue').value = holdings.revenue || '';
+    document.getElementById('cb-treasury-stationery').value = holdings.stationery || '';
+    ['cb-treasury-postage', 'cb-treasury-revenue', 'cb-treasury-stationery'].forEach(id => {
+        const input = document.getElementById(id);
+        if (input) input.disabled = treasuryState.isHoliday || treasuryState.isSaved || treasuryState.isLocked;
+    });
+    updateTreasurySummary();
     if (treasuryHeroOpen) treasuryHeroOpen.textContent = money(opBal);
     if (treasuryHeroClose) treasuryHeroClose.textContent = money(running);
     if (treasuryHeroPhysical) treasuryHeroPhysical.textContent = money(physicalCash);
@@ -1217,9 +1312,9 @@ function loadCashBookDate() {
     const tallyInputsDisabled = treasuryState.isHoliday || treasuryState.isLocked || !treasuryState.isSaved;
     denominationInputs.forEach(input => { input.disabled = tallyInputsDisabled; });
     if (tallySaveBtn) {
-        tallySaveBtn.disabled = treasuryState.isHoliday || !treasuryState.isSaved;
+        tallySaveBtn.disabled = treasuryState.isHoliday || treasuryState.isLocked || !treasuryState.isSaved;
         if (treasuryState.isHoliday) tallySaveBtn.innerHTML = "<i data-lucide='ban'></i> No Transactions Today";
-        else if (treasuryState.isLocked) tallySaveBtn.innerHTML = "<i data-lucide='save'></i> Day Ended";
+        else if (treasuryState.isLocked) tallySaveBtn.innerHTML = "<i data-lucide='lock'></i> Day Ended";
         else if (treasuryState.isSaved) tallySaveBtn.innerHTML = "<i data-lucide='save'></i> Lock Day & Save Tally";
         else tallySaveBtn.innerHTML = "<i data-lucide='lock'></i> Close Treasury First";
     }
@@ -1229,6 +1324,7 @@ function loadCashBookDate() {
 }
 
 async function saveBodaRemark() { let date = document.getElementById('cb-main-date').value; let remark = document.getElementById('cb-boda-remark').value.trim(); if (!memCbStates[date]) memCbStates[date] = {}; memCbStates[date].bodaRemark = remark; await localforage.setItem('cashBookStatesV2', memCbStates); showToast("💾 Remark saved!"); }
+async function saveAoDispatch() { const date = document.getElementById('cb-main-date').value; const dispatch = document.getElementById('cb-ao-dispatch').value.trim(); if (!memCbStates[date]) memCbStates[date] = {}; memCbStates[date].aoDispatch = dispatch; await localforage.setItem('cashBookStatesV2', memCbStates); showToast('💾 AO dispatch details saved!'); }
 async function confirmCashVerification() { let selectedDate = document.getElementById('cb-main-date').value; if (!memCbStates[selectedDate]) memCbStates[selectedDate] = {}; memCbStates[selectedDate].cashVerified = true; await localforage.setItem('cashBookStatesV2', memCbStates); document.getElementById('verifyCashModal').style.display = 'none'; loadCashBookDate(); }
 function openOverrideModal() { document.getElementById('override-date').textContent = document.getElementById('cb-main-date').value; document.getElementById('override-input').value = ''; document.getElementById('override-confirm').value = ''; document.getElementById('override-save-btn').disabled = true; document.getElementById('overrideModal').style.display = 'flex'; }
 function closeOverrideModal() { document.getElementById('overrideModal').style.display = 'none'; }
@@ -1243,7 +1339,7 @@ async function addCashBookEntry(type) {
     const desc = scheme.includes('General') ? (descRaw || 'Other') : (descRaw ? `[${scheme}] ${descRaw}` : `[${scheme}]`);
     memCbData.push({ id: createCashEntryId(), date, desc, type, amt }); await localforage.setItem('cashBookDataV2', memCbData); document.getElementById(`cb-${type.substring(0,3)}-desc`).value = ''; document.getElementById(`cb-${type.substring(0,3)}-amt`).value = ''; loadCashBookDate();
 }
-async function deleteCbRow(id) { if(confirm("Delete this entry?")) { memCbData = memCbData.filter(d => d.id !== id); await localforage.setItem('cashBookDataV2', memCbData); loadCashBookDate(); } }
+async function deleteCbRow(id) { const date = document.getElementById('cb-main-date').value; if (getTreasuryWorkflowState(date).isSaved) return alert('Treasury is closed for the day. Re-open it before deleting entries.'); if(confirm("Delete this entry?")) { memCbData = memCbData.filter(d => d.id !== id); await localforage.setItem('cashBookDataV2', memCbData); loadCashBookDate(); } }
 async function saveCashBookDate() { let date = document.getElementById('cb-main-date').value; const treasuryState = getTreasuryWorkflowState(date); if (treasuryState.closedReason) return alert(`No treasury transactions are allowed on ${treasuryState.closedReason}.`); let closeBal = Number(document.getElementById('cb-cur-bal').textContent.replace(/[^\d.-]/g, '')); if (!memCbStates[date]) memCbStates[date] = {}; memCbStates[date].saved = true; memCbStates[date].closingBalance = closeBal; await localforage.setItem('cashBookStatesV2', memCbStates); loadCashBookDate(); openCashTallyMenu(); }
 async function modifyCashBookDate() { let date = document.getElementById('cb-main-date').value; if(memCbStates[date]?.tallyLocked) return alert("Cannot re-open Treasury. Unlock tally first."); if(memCbStates[date]) { memCbStates[date].saved = false; await localforage.setItem('cashBookStatesV2', memCbStates); } loadCashBookDate(); }
 
@@ -1260,7 +1356,7 @@ function checkTallyDate() {
     document.getElementById('btn-delete-tally').style.display = existingIdx !== -1 ? 'inline-block' : 'none';
     if (treasuryState.isHoliday) { statusBadge.innerHTML = `🏖 ${escapeHTML(treasuryState.closedReason)}`; statusBadge.style.background = "#ffedd5"; statusBadge.style.color = "#9a3412"; saveBtn.disabled = true; saveBtn.innerHTML = "<i data-lucide='ban'></i> No Transactions Today"; }
     else if(!isSaved) { statusBadge.innerHTML = "⚠️ Treasury NOT Closed"; statusBadge.style.background = "#fef2f2"; statusBadge.style.color = "var(--danger)"; saveBtn.disabled = true; saveBtn.innerHTML = "<i data-lucide='lock'></i> Close Treasury First"; } 
-    else if (treasuryState.isLocked) { statusBadge.innerHTML = "🔒 Day Ended"; statusBadge.style.background = "#dcfce7"; statusBadge.style.color = "#166534"; saveBtn.disabled = false; saveBtn.innerHTML = "<i data-lucide='save'></i> Replace Saved Tally"; } 
+    else if (treasuryState.isLocked) { statusBadge.innerHTML = "🔒 Day Ended"; statusBadge.style.background = "#dcfce7"; statusBadge.style.color = "#166534"; saveBtn.disabled = true; saveBtn.innerHTML = "<i data-lucide='lock'></i> Day Ended"; } 
     else { statusBadge.innerHTML = "✅ Treasury Closed"; statusBadge.style.background = "#dbeafe"; statusBadge.style.color = "#1e40af"; saveBtn.disabled = false; saveBtn.innerHTML = "<i data-lucide='save'></i> Lock Day & Save Tally"; }
     lucide.createIcons(); calcCash();
 }
@@ -1269,6 +1365,7 @@ function calcCash() {
     document.getElementById('cash-total-val-td').textContent = money(tot); document.getElementById('cash-words-val').textContent = tot === 0 ? "Zero Rupees Only" : toWords(tot) + " Rupees Only";
     let d = document.getElementById('cb-main-date').value; let cbBal = memCbStates[d] && memCbStates[d].saved ? memCbStates[d].closingBalance : 0; let diffEl = document.getElementById('tally-diff');
     if (memCbStates[d] && memCbStates[d].saved) { let diff = tot - cbBal; if(diff === 0) { diffEl.innerHTML = '✅ Tally matches perfectly'; diffEl.style.color = 'var(--success)'; } else { diffEl.innerHTML = `⚠️ Difference: ${money(diff)}`; diffEl.style.color = 'var(--danger)'; } } else { diffEl.innerHTML = 'Close Treasury to check difference.'; diffEl.style.color = 'var(--text-muted)'; }
+    renderTreasuryReconciliation();
 }
 
 function clearCashTally() { [500,200,100,50,20,10,5,2,1].forEach(n => document.getElementById('c-'+n).value=''); calcCash(); }
@@ -1285,8 +1382,20 @@ async function deleteLoadedTally() { let d = document.getElementById('cb-main-da
 function renderCashHistory() { const el = document.getElementById('cashHistoryList'); if(!memTallyHist.length) return el.innerHTML='<div style="text-align:center; padding:32px; color:var(--text-muted); font-size:0.875rem; border:1px dashed var(--border); border-radius:8px;">No saved tallies yet.</div>'; el.innerHTML = memTallyHist.map((b,i) => `<div style="display:flex; justify-content:space-between; align-items:center; padding:12px 16px; border:1px solid var(--border); border-radius:8px; background:var(--bg-input);"><div><strong style="display:block; font-size:0.875rem;">${escapeHTML(b.label)}</strong><span style="font-size:0.75rem; color:var(--text-muted);">Total: ${money(b.total)} · Date: ${escapeHTML(b.date)}</span></div><button class="btn btn-outline" onclick="loadCashTally(${i})" style="height:auto;">Load</button></div>`).join(""); }
 window.loadCashTally = function(i) { if(!confirm("Load this tally? Current inputs will be replaced.")) return; const b = memTallyHist[i]; document.getElementById('cash-tally-name').value = b.label; document.getElementById('cb-main-date').value = b.date; loadCashBookDate(); [500,200,100,50,20,10,5,2,1].forEach(n => { document.getElementById(`c-${n}`).value = b.notes[n] || ''; }); calcCash(); }
 
+function getBodaDocumentReference(date) {
+    if (!memCbStates[date]) memCbStates[date] = {};
+    if (!memCbStates[date].bodaDocumentReference) {
+        const serial = window.crypto?.getRandomValues ? String(window.crypto.getRandomValues(new Uint32Array(1))[0] % 900000 + 100000) : String(Date.now()).slice(-6);
+        memCbStates[date].bodaDocumentReference = `BODA-${date.replace(/-/g, '')}-${serial}`;
+        localforage.setItem('cashBookStatesV2', memCbStates).catch(() => {});
+    }
+    return memCbStates[date].bodaDocumentReference;
+}
+
 function printBoda() {
     let d = document.getElementById('cb-main-date').value; document.getElementById('boda-date').textContent = parseLocalDate(d).toLocaleDateString('en-IN'); document.getElementById('boda-bo').textContent = globalBoName; document.getElementById('boda-ao').textContent = globalSpoName || globalHoName || '___________';
+    const documentReference = getBodaDocumentReference(d);
+    document.getElementById('boda-reference').textContent = documentReference;
     let opBal = document.getElementById('cb-op-bal').textContent; let clBal = document.getElementById('cb-cur-bal').textContent; let totRec = document.getElementById('cb-tot-rec').textContent; let totPay = document.getElementById('cb-tot-pay').textContent;
     let todayCb = memCbData.filter(x => x.date === d);
     let recHtml = `<tr><td style="padding:4px; font-weight:bold;">Opening Balance</td><td style="text-align:right; padding:4px; font-weight:bold;">${opBal}</td></tr>`;
@@ -1299,6 +1408,68 @@ function printBoda() {
     document.getElementById('boda-cl-bal-words').textContent = Number(clBal.replace(/[^\d.-]/g, '')) === 0 ? "Zero Rupees Only" : toWords(Number(clBal.replace(/[^\d.-]/g, ''))) + " Rupees Only";
     let tally = memTallyHist.find(t => t.date === d);
     if(tally) { let details = [500,200,100,50,20,10,5,2,1].map(n => tally.notes[n] ? `₹${n} x ${tally.notes[n]} = ₹${n * tally.notes[n]}` : null).filter(x=>x).join('\n'); document.getElementById('boda-notes-breakdown').textContent = details + `\n\nTotal Cash: ${money(tally.total)}`; } else { document.getElementById('boda-notes-breakdown').textContent = "Physical tally not yet locked for this date."; }
+    const denominations = [500,200,100,50,20,10,5,2,1];
+    const enteredPhysicalCash = denominations.reduce((sum, denom) => sum + (Number(document.getElementById(`c-${denom}`)?.value) || 0) * denom, 0);
+    const hasPhysicalTally = Boolean(tally) || denominations.some(denom => Number(document.getElementById(`c-${denom}`)?.value) > 0);
+    const physicalCash = tally?.total ?? enteredPhysicalCash;
+    const closingCash = Number(clBal.replace(/[^\d.-]/g, '')) || 0;
+    const postage = Math.max(0, Number(document.getElementById('cb-treasury-postage')?.value) || 0);
+    const revenue = Math.max(0, Number(document.getElementById('cb-treasury-revenue')?.value) || 0);
+    const stationery = Math.max(0, Number(document.getElementById('cb-treasury-stationery')?.value) || 0);
+    const stockValue = postage + revenue + stationery;
+    const remittance = todayCb.filter(entry => entry.type === 'payment' && String(entry.desc || '').includes('[Remittance to AO]'))
+        .reduce((sum, entry) => sum + (Number(entry.amt) || 0), 0);
+    const cashDifference = physicalCash - closingCash;
+    document.getElementById('boda-recon-book-cash').textContent = money(closingCash);
+    document.getElementById('boda-recon-physical-cash').textContent = money(physicalCash);
+    document.getElementById('boda-recon-postage').textContent = money(postage);
+    document.getElementById('boda-recon-revenue').textContent = money(revenue);
+    document.getElementById('boda-recon-stationery').textContent = money(stationery);
+    document.getElementById('boda-recon-remittance').textContent = money(remittance);
+    document.getElementById('boda-recon-total-holdings').textContent = money(closingCash + stockValue);
+    if (!hasPhysicalTally) {
+        document.getElementById('boda-recon-status').textContent = 'Awaiting physical tally';
+        document.getElementById('boda-recon-note').textContent = 'Enter denomination counts before printing to complete the cash reconciliation.';
+    } else if (Math.abs(cashDifference) < 0.005) {
+        document.getElementById('boda-recon-status').textContent = 'Cash matched';
+        document.getElementById('boda-recon-note').textContent = `Physical cash matches the cash book. Remittance to AO recorded: ${money(remittance)}.`;
+    } else {
+        const isExcess = cashDifference > 0;
+        document.getElementById('boda-recon-status').textContent = isExcess ? 'Cash excess' : 'Cash shortage';
+        document.getElementById('boda-recon-note').textContent = `Physical cash is ${isExcess ? 'higher' : 'lower'} than the cash-book closing balance by ${money(Math.abs(cashDifference))}.`;
+    }
+    const accountOpenings = memAccReg
+        .filter(entry => entry.date === d)
+        .sort((a, b) => (Number(a.prNo) || 99999) - (Number(b.prNo) || 99999));
+    const accountOpeningSection = document.getElementById('boda-account-openings-section');
+    if (accountOpenings.length) {
+        document.getElementById('boda-account-openings-body').innerHTML = accountOpenings
+            .map(entry => `<tr><td>${escapeHTML(entry.scheme || '—')}</td><td>${escapeHTML(entry.prNo || '—')}</td><td>${money(Number(entry.amt) || 0)}</td></tr>`)
+            .join('');
+        document.getElementById('boda-account-openings-total').textContent = money(accountOpenings.reduce((sum, entry) => sum + (Number(entry.amt) || 0), 0));
+        accountOpeningSection.style.display = 'block';
+    } else {
+        accountOpeningSection.style.display = 'none';
+    }
+    const aoDispatch = document.getElementById('cb-ao-dispatch').value.trim();
+    const dispatchSection = document.getElementById('boda-ao-dispatch-section');
+    if (aoDispatch) { dispatchSection.style.display = 'block'; document.getElementById('boda-ao-dispatch-text').textContent = aoDispatch; } else { dispatchSection.style.display = 'none'; }
+    const qrTarget = document.getElementById('boda-qr-code');
+    const qrNote = document.getElementById('boda-qr-note');
+    // A short payload produces a larger-module QR code that remains scannable after printing.
+    // The itemized details remain on the slip itself; the QR carries its verifiable Treasury summary.
+    const qrPayload = JSON.stringify({ v: 1, r: documentReference, bo: globalBoName, d, op: Number(opBal.replace(/[^\d.-]/g, '')) || 0, rc: Number(totRec.replace(/[^\d.-]/g, '')) || 0, wd: Number(totPay.replace(/[^\d.-]/g, '')) || 0, cl: closingCash, pc: hasPhysicalTally ? physicalCash : null, st: [postage, revenue, stationery], rm: remittance, ac: accountOpenings.length });
+    qrTarget.innerHTML = '';
+    if (!window.QRCode) {
+        qrTarget.textContent = 'QR unavailable'; qrNote.textContent = 'QR library is unavailable. Reference: ' + documentReference;
+    } else {
+        try {
+            new window.QRCode(qrTarget, { text: qrPayload, width: 180, height: 180, correctLevel: window.QRCode.CorrectLevel.H });
+            qrNote.textContent = 'Scan for the Treasury summary and document reference';
+        } catch (error) {
+            qrTarget.textContent = 'QR unavailable'; qrNote.textContent = 'Reference: ' + documentReference;
+        }
+    }
     let remark = document.getElementById('cb-boda-remark').value.trim(); if(remark) { document.getElementById('boda-remark-section').style.display = 'block'; document.getElementById('boda-remark-text').textContent = remark; } else { document.getElementById('boda-remark-section').style.display = 'none'; }
     document.body.classList.remove('printing-bill', 'printing-rates', 'printing-ledger', 'printing-slip'); printModule('Cash_Book_BODA_BO_Slip', 'printing-boda');
 }
@@ -2329,6 +2500,13 @@ window.showReportSection = function(section) {
     }
 };
 
+window.openBOSummary = function() {
+    window.showReportSection('bosummary');
+    const summary = document.getElementById('rep-section-bosummary');
+    if (summary) summary.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    lucide.createIcons();
+};
+
 // ── Insights Studio ──────────────────────────────────────────────────────────
 let isTrendChart = null, isPortfolioChart = null, isIncentiveChart = null;
 let insightsTrendTab = 'deposits';
@@ -3199,24 +3377,100 @@ window.generateUnifiedMasterReport = async function() {
     const start = document.getElementById('rep-start')?.value;
     const end = document.getElementById('rep-end')?.value;
     if (!start || !end) return alert('Select a date range first.');
-    const cb = memCbData.filter(entry => entry.date >= start && entry.date <= end);
-    const ledger = memAccReg.filter(entry => entry.date >= start && entry.date <= end);
+    if (start > end) return alert('The report start date must be before the end date.');
+    const cb = memCbData.filter(entry => entry.date >= start && entry.date <= end).sort((a, b) => String(a.date).localeCompare(String(b.date)));
+    const ledger = memAccReg.filter(entry => entry.date >= start && entry.date <= end).sort((a, b) => String(a.date).localeCompare(String(b.date)));
+    const tdEntries = memTdEntries.filter(entry => !entry.openDate || (entry.openDate >= start && entry.openDate <= end));
+    const overrides = Object.entries(memOverrides).filter(([date]) => date >= start && date <= end).sort((a, b) => a[0].localeCompare(b[0]));
+    const audit = memAuditLog.filter(item => String(item.at || '').slice(0, 10) >= start && String(item.at || '').slice(0, 10) <= end).slice(0, 100);
     const wrapper = document.createElement('div');
     wrapper.id = 'master-report-wrap';
-    wrapper.style.cssText = 'background:#fff;color:#111;padding:20px;font-family:Inter, sans-serif;max-width:980px;';
     const rec = cb.filter(entry => entry.type === 'receipt').reduce((sum, entry) => sum + (Number(entry.amt) || 0), 0);
     const pay = cb.filter(entry => entry.type === 'payment').reduce((sum, entry) => sum + (Number(entry.amt) || 0), 0);
+    const deposits = ledger.reduce((sum, entry) => sum + (Number(entry.amt) || 0), 0);
+    const schemeData = Object.values(ledger.reduce((map, entry) => {
+        const key = entry.scheme || 'Unspecified';
+        if (!map[key]) map[key] = { scheme: key, count: 0, deposits: 0 };
+        map[key].count += 1; map[key].deposits += Number(entry.amt) || 0; return map;
+    }, {})).sort((a, b) => b.deposits - a.deposits);
+    const passbookCounts = ['Pending AO', 'At BO', 'Delivered'].map(status => ({ status, count: ledger.filter(entry => entry.pbStatus === status).length }));
+    const pendingPassbooks = passbookCounts[0].count;
+    const tdRows = tdEntries.map(entry => ({ ...entry, rate: INCENTIVE_RATES[String(entry.term)] || 0, incentive: Number(entry.incentive) || Math.round((Number(entry.deposit) || 0) * (INCENTIVE_RATES[String(entry.term)] || 0)) }));
+    const tdDeposit = tdRows.reduce((sum, entry) => sum + (Number(entry.deposit) || 0), 0);
+    const tdIncentive = tdRows.reduce((sum, entry) => sum + entry.incentive, 0);
+    let runningBalance = memCbData.filter(entry => entry.date < start).reduce((sum, entry) => sum + (entry.type === 'receipt' ? Number(entry.amt) || 0 : -(Number(entry.amt) || 0)), 0);
+    const table = (headers, rows, className = '') => `<div class="master-table-wrap"><table class="master-table ${className}"><thead><tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows || `<tr><td colspan="${headers.length}" class="master-empty">No records in this reporting period.</td></tr>`}</tbody></table></div>`;
+    const safe = value => escapeHTML(value || '—');
+    const dayMap = {};
+    [...ledger, ...cb].forEach(entry => {
+        if (!dayMap[entry.date]) dayMap[entry.date] = { accounts: 0, deposits: 0, receipts: 0, payments: 0 };
+        if ('scheme' in entry) { dayMap[entry.date].accounts += 1; dayMap[entry.date].deposits += Number(entry.amt) || 0; }
+        else if (entry.type === 'receipt') dayMap[entry.date].receipts += Number(entry.amt) || 0;
+        else dayMap[entry.date].payments += Number(entry.amt) || 0;
+    });
+    const dailyActivityRows = Object.entries(dayMap).sort(([a], [b]) => a.localeCompare(b)).map(([date, item]) => `<tr><td>${safe(date)}</td><td>${item.accounts}</td><td class="amount">${money(item.deposits)}</td><td class="amount">${money(item.receipts)}</td><td class="amount">${money(item.payments)}</td><td class="amount">${money(item.receipts - item.payments)}</td></tr>`).join('');
+    const ledgerRow = (entry, index) => `<tr><td>${index + 1}</td><td>${safe(entry.date)}</td><td>${safe(entry.prNo)}</td><td class="mono">${safe(entry.acc)}</td><td>${safe(entry.name)}</td><td>${safe(entry.scheme)}</td><td class="amount">${money(Number(entry.amt) || 0)}</td><td>${safe(entry.pbStatus)}</td></tr>`;
+    const reportPage = (number, title, description, content) => `<section class="master-section master-report-page"><div class="master-section-heading"><span>${number}</span><div><h2>${title}</h2><p>${description}</p></div></div>${content}</section>`;
     wrapper.innerHTML = `
-      <h2 style="margin:0 0 8px;">Unified Master Report</h2>
-      <div style="margin-bottom:14px;">Period: ${start} to ${end} | Branch: ${escapeHTML(globalBoName)}</div>
-      <h3>Cashbook Summary</h3>
-      <table style="width:100%; border-collapse:collapse; margin-bottom:16px;"><tr><th style="border:1px solid #ddd; padding:8px;">Total Receipts</th><th style="border:1px solid #ddd; padding:8px;">Total Payments</th><th style="border:1px solid #ddd; padding:8px;">Net</th></tr><tr><td style="border:1px solid #ddd; padding:8px;">${money(rec)}</td><td style="border:1px solid #ddd; padding:8px;">${money(pay)}</td><td style="border:1px solid #ddd; padding:8px;">${money(rec - pay)}</td></tr></table>
-      <h3>Ledger Summary</h3>
-      <table style="width:100%; border-collapse:collapse; margin-bottom:16px;"><tr><th style="border:1px solid #ddd; padding:8px;">Accounts Opened</th><th style="border:1px solid #ddd; padding:8px;">Deposit Mobilized</th><th style="border:1px solid #ddd; padding:8px;">Pending AO</th></tr><tr><td style="border:1px solid #ddd; padding:8px;">${ledger.length}</td><td style="border:1px solid #ddd; padding:8px;">${money(ledger.reduce((s,e)=>s+(Number(e.amt)||0),0))}</td><td style="border:1px solid #ddd; padding:8px;">${ledger.filter(e=>e.pbStatus==='Pending AO').length}</td></tr></table>
-      <h3>Manual Overrides / Audit</h3>
-      <div style="margin-bottom:10px;">Overrides in range: ${Object.keys(memOverrides).filter(date => date >= start && date <= end).length}</div>
-      <div style="font-size:12px; color:#444;">Generated on ${new Date().toLocaleString('en-IN')}</div>
+      <section class="master-cover">
+        <div><div class="master-eyebrow">India Post · Branch Operations</div><h1>Unified Master Report</h1><p>Operational performance, financial controls and service delivery record</p></div>
+        <div class="master-cover-meta"><strong>${safe(globalBoName)}</strong><span>${start} to ${end}</span><span>Generated ${new Date().toLocaleString('en-IN')}</span></div>
+      </section>
+      <section class="master-section master-kpi-section">
+        <div class="master-section-heading"><span>01</span><div><h2>Executive KPI Snapshot</h2><p>Branch performance at a glance for the selected reporting window.</p></div></div>
+        <div class="master-kpis"><article><span>Accounts Opened</span><strong>${ledger.length}</strong><small>New portfolio records</small></article><article><span>Deposit Mobilized</span><strong>${money(deposits)}</strong><small>Across all schemes</small></article><article><span>Cash Movement</span><strong>${money(rec - pay)}</strong><small>${money(rec)} received · ${money(pay)} paid</small></article><article><span>TD Incentive Due</span><strong>${money(tdIncentive)}</strong><small>${tdRows.length} eligible account${tdRows.length === 1 ? '' : 's'}</small></article></div>
+      </section>
+      <section class="master-section">
+        <div class="master-section-heading"><span>02</span><div><h2>Scheme-wise Portfolio Performance</h2><p>Account acquisition and deposit mobilization by scheme.</p></div></div>
+        ${table(['Scheme', 'Accounts', 'Deposit Mobilized', 'Portfolio Share'], schemeData.map(item => `<tr><td><strong>${safe(item.scheme)}</strong></td><td>${item.count}</td><td class="amount">${money(item.deposits)}</td><td>${deposits ? ((item.deposits / deposits) * 100).toFixed(1) : '0.0'}%</td></tr>`).join(''))}
+      </section>
+      <section class="master-section">
+        <div class="master-section-heading"><span>03</span><div><h2>Passbook & Account Pipeline</h2><p>Service-stage monitoring for accounts opened during the period.</p></div></div>
+        <div class="master-pipeline">${passbookCounts.map(item => `<article class="pipeline-${item.status.toLowerCase().replace(/\s+/g, '-')}"><span>${item.status}</span><strong>${item.count}</strong><small>${ledger.length ? ((item.count / ledger.length) * 100).toFixed(0) : 0}% of period accounts</small></article>`).join('')}</div>
+        ${table(['Date', 'Account No.', 'Customer', 'Scheme', 'Status'], ledger.filter(entry => entry.pbStatus && entry.pbStatus !== 'Delivered').map(entry => `<tr><td>${safe(entry.date)}</td><td class="mono">${safe(entry.acc)}</td><td>${safe(entry.name)}</td><td>${safe(entry.scheme)}</td><td>${safe(entry.pbStatus)}</td></tr>`).join(''))}
+      </section>
+      <section class="master-section master-page-break">
+        <div class="master-section-heading"><span>04</span><div><h2>Full Cashbook Transaction Register</h2><p>Opening balance, daily transaction movement and running balance.</p></div></div>
+        ${table(['Date', 'Type', 'Particulars', 'Receipt', 'Payment', 'Running Balance'], cb.map(entry => { runningBalance += entry.type === 'receipt' ? Number(entry.amt) || 0 : -(Number(entry.amt) || 0); return `<tr><td>${safe(entry.date)}</td><td class="caps">${safe(entry.type)}</td><td>${safe(entry.desc)}</td><td class="amount">${entry.type === 'receipt' ? money(Number(entry.amt) || 0) : '—'}</td><td class="amount">${entry.type === 'payment' ? money(Number(entry.amt) || 0) : '—'}</td><td class="amount"><strong>${money(runningBalance)}</strong></td></tr>`; }).join(''))}
+        <div class="master-cash-total"><span>Opening balance: <strong>${money(memCbData.filter(entry => entry.date < start).reduce((sum, entry) => sum + (entry.type === 'receipt' ? Number(entry.amt) || 0 : -(Number(entry.amt) || 0)), 0))}</strong></span><span>Closing balance: <strong>${money(runningBalance)}</strong></span></div>
+      </section>
+      <section class="master-section">
+        <div class="master-section-heading"><span>05</span><div><h2>TD Incentive Eligibility Details</h2><p>Accounts eligible in the active TD incentive register for this reporting period.</p></div></div>
+        ${table(['Open Date', 'Account No.', 'Depositor', 'Term', 'Deposit', 'Rate', 'Eligible Incentive'], tdRows.map(entry => `<tr><td>${safe(entry.openDate)}</td><td class="mono">${safe(entry.accNo)}</td><td>${safe(entry.depName)}</td><td>${safe(entry.term)} Year</td><td class="amount">${money(Number(entry.deposit) || 0)}</td><td>${(entry.rate * 100).toFixed(2)}%</td><td class="amount"><strong>${money(entry.incentive)}</strong></td></tr>`).join(''))}
+        <div class="master-total-callout"><span>Eligible deposits <strong>${money(tdDeposit)}</strong></span><span>Incentive payable <strong>${money(tdIncentive)}</strong></span></div>
+      </section>
+      <section class="master-section master-page-break">
+        <div class="master-section-heading"><span>06</span><div><h2>Account-opening Register</h2><p>Detailed register of new accounts opened during the reporting period.</p></div></div>
+        ${table(['#', 'Date', 'PR', 'Account No.', 'Customer', 'Scheme', 'Deposit', 'Passbook'], ledger.map((entry, index) => `<tr><td>${index + 1}</td><td>${safe(entry.date)}</td><td>${safe(entry.prNo)}</td><td class="mono">${safe(entry.acc)}</td><td>${safe(entry.name)}</td><td>${safe(entry.scheme)}</td><td class="amount">${money(Number(entry.amt) || 0)}</td><td>${safe(entry.pbStatus)}</td></tr>`).join(''))}
+      </section>
+      <section class="master-section">
+        <div class="master-section-heading"><span>07</span><div><h2>Manual Overrides & Audit Activity</h2><p>Control exceptions and recorded user activity for review.</p></div></div>
+        <h3 class="master-subheading">Manual Balance Overrides</h3>
+        ${table(['Date', 'Opening Balance Set', 'Review Status'], overrides.map(([date, amount]) => `<tr><td>${safe(date)}</td><td class="amount">${money(Number(amount) || 0)}</td><td>Manual override recorded</td></tr>`).join(''))}
+        <h3 class="master-subheading">Audit Trail</h3>
+        ${table(['Timestamp', 'Action', 'Module', 'Details'], audit.map(item => `<tr><td>${safe(new Date(item.at).toLocaleString('en-IN'))}</td><td>${safe(item.action)}</td><td>${safe(item.module)}</td><td>${safe(item.details)}</td></tr>`).join(''))}
+      </section>
+      <footer class="master-footer"><span>Prepared for internal branch control and supervisory review.</span><span>${safe(globalBpmName || 'Branch Postmaster')} · ${safe(globalBoName)}</span></footer>
     `;
+    const appendix = [
+        reportPage('08', 'Daily Branch Activity Register', 'Day-wise account acquisition, deposits and cash movement.', table(['Date', 'Accounts', 'Deposits', 'Receipts', 'Payments', 'Net Cash'], dailyActivityRows)),
+        reportPage('09', 'Cash Receipt Register', 'Complete receipt-side transaction listing for the selected period.', table(['Date', 'Particulars', 'Amount'], cb.filter(entry => entry.type === 'receipt').map(entry => `<tr><td>${safe(entry.date)}</td><td>${safe(entry.desc)}</td><td class="amount">${money(Number(entry.amt) || 0)}</td></tr>`).join(''))),
+        reportPage('10', 'Cash Payment Register', 'Complete payment-side transaction listing for the selected period.', table(['Date', 'Particulars', 'Amount'], cb.filter(entry => entry.type === 'payment').map(entry => `<tr><td>${safe(entry.date)}</td><td>${safe(entry.desc)}</td><td class="amount">${money(Number(entry.amt) || 0)}</td></tr>`).join(''))),
+        reportPage('11', 'Daily Closing & Cash Control Log', 'Daily saved, tallied and override status used for operational control.', table(['Date', 'Saved', 'Tally Locked', 'Override', 'Control Status'], Object.keys({ ...memCbStates, ...memOverrides }).filter(date => date >= start && date <= end).sort().map(date => `<tr><td>${safe(date)}</td><td>${memCbStates[date]?.saved ? 'Yes' : 'No'}</td><td>${memCbStates[date]?.tallyLocked ? 'Yes' : 'No'}</td><td>${memOverrides[date] !== undefined ? money(Number(memOverrides[date]) || 0) : '—'}</td><td>${memCbStates[date]?.tallyLocked ? 'Closed' : 'Review required'}</td></tr>`).join(''))),
+        reportPage('12', 'Scheme Mobilization Ledger', 'Scheme-level portfolio totals and average ticket value.', table(['Scheme', 'Accounts', 'Deposits', 'Average Deposit', 'Share'], schemeData.map(item => `<tr><td>${safe(item.scheme)}</td><td>${item.count}</td><td class="amount">${money(item.deposits)}</td><td class="amount">${money(item.count ? item.deposits / item.count : 0)}</td><td>${deposits ? ((item.deposits / deposits) * 100).toFixed(1) : '0.0'}%</td></tr>`).join(''))),
+        reportPage('13', 'Account Opening Register — Part I', 'First half of the period account-opening register.', table(['#', 'Date', 'PR', 'Account No.', 'Customer', 'Scheme', 'Deposit', 'Passbook'], ledger.slice(0, Math.ceil(ledger.length / 2)).map(ledgerRow).join(''))),
+        reportPage('14', 'Account Opening Register — Part II', 'Second half of the period account-opening register.', table(['#', 'Date', 'PR', 'Account No.', 'Customer', 'Scheme', 'Deposit', 'Passbook'], ledger.slice(Math.ceil(ledger.length / 2)).map((entry, index) => ledgerRow(entry, Math.ceil(ledger.length / 2) + index)).join(''))),
+        reportPage('15', 'Passbook Exception Register', 'Accounts pending at AO or currently held at BO for follow-up.', table(['Date', 'Account No.', 'Customer', 'Scheme', 'Current Status', 'Remarks'], ledger.filter(entry => ['Pending AO', 'At BO'].includes(entry.pbStatus)).map(entry => `<tr><td>${safe(entry.date)}</td><td class="mono">${safe(entry.acc)}</td><td>${safe(entry.name)}</td><td>${safe(entry.scheme)}</td><td>${safe(entry.pbStatus)}</td><td>${safe(entry.remarks)}</td></tr>`).join(''))),
+        reportPage('16', 'Passbook Delivery Confirmation Register', 'Delivered passbooks from accounts opened in the selected period.', table(['Date', 'Account No.', 'Customer', 'Scheme', 'Deposit', 'Status'], ledger.filter(entry => entry.pbStatus === 'Delivered').map(entry => `<tr><td>${safe(entry.date)}</td><td class="mono">${safe(entry.acc)}</td><td>${safe(entry.name)}</td><td>${safe(entry.scheme)}</td><td class="amount">${money(Number(entry.amt) || 0)}</td><td>Delivered</td></tr>`).join(''))),
+        reportPage('17', 'TD Incentive Rate Validation', 'Eligibility checks by term and applicable incentive rate.', table(['Term', 'Eligible Accounts', 'Eligible Deposits', 'Rate', 'Expected Incentive'], ['1', '2', '3', '5'].map(term => { const rows = tdRows.filter(entry => String(entry.term) === term); const amount = rows.reduce((sum, entry) => sum + (Number(entry.deposit) || 0), 0); return `<tr><td>${term} Year TD</td><td>${rows.length}</td><td class="amount">${money(amount)}</td><td>${((INCENTIVE_RATES[term] || 0) * 100).toFixed(2)}%</td><td class="amount">${money(rows.reduce((sum, entry) => sum + entry.incentive, 0))}</td></tr>`; }).join(''))),
+        reportPage('18', 'TD Incentive Account Ledger', 'Account-level eligibility, deposit and incentive calculation record.', table(['Open Date', 'Account No.', 'Depositor', 'PR', 'Term', 'Deposit', 'Rate', 'Incentive'], tdRows.map(entry => `<tr><td>${safe(entry.openDate)}</td><td class="mono">${safe(entry.accNo)}</td><td>${safe(entry.depName)}</td><td>${safe(entry.prNo)}</td><td>${safe(entry.term)} Year</td><td class="amount">${money(Number(entry.deposit) || 0)}</td><td>${(entry.rate * 100).toFixed(2)}%</td><td class="amount">${money(entry.incentive)}</td></tr>`).join(''))),
+        reportPage('19', 'Audit, Override & Exception Log', 'Recorded manual interventions and user activity available for supervisory review.', `${table(['Date', 'Override Amount', 'Status'], overrides.map(([date, amount]) => `<tr><td>${safe(date)}</td><td class="amount">${money(Number(amount) || 0)}</td><td>Manual override recorded</td></tr>`).join(''))}<h3 class="master-subheading">Recent Audit Events</h3>${table(['Timestamp', 'Action', 'Module', 'Details'], audit.map(item => `<tr><td>${safe(new Date(item.at).toLocaleString('en-IN'))}</td><td>${safe(item.action)}</td><td>${safe(item.module)}</td><td>${safe(item.details)}</td></tr>`).join(''))}`),
+        reportPage('20', 'Certification & Supervisory Review', 'Final control checklist and certification page for the report file.', `<div class="master-certification"><p>This report consolidates the cashbook, account-opening register, passbook pipeline, TD incentive register and recorded audit activity for <strong>${safe(globalBoName)}</strong>.</p><table><tbody><tr><th>Control review</th><td>Cashbook movement and closing balance reviewed</td><td>☐ Checked</td></tr><tr><th>Service review</th><td>Pending passbooks and account records reviewed</td><td>☐ Checked</td></tr><tr><th>Incentive review</th><td>TD incentive eligibility checked against the register</td><td>☐ Checked</td></tr><tr><th>Audit review</th><td>Manual overrides and exception activity reviewed</td><td>☐ Checked</td></tr></tbody></table><div class="master-signatures"><div><span>Prepared by</span><strong>${safe(globalBpmName || 'Branch Postmaster')}</strong></div><div><span>Verified by</span><strong>Sub Postmaster / Supervisor</strong></div><div><span>Date</span><strong>________________</strong></div></div></div>`)
+    ].join('');
+    const reportFooter = wrapper.querySelector('.master-footer');
+    reportFooter.remove();
+    wrapper.insertAdjacentHTML('beforeend', appendix);
+    wrapper.lastElementChild.insertAdjacentHTML('beforeend', reportFooter.outerHTML);
     document.body.appendChild(wrapper);
     try {
         await window.exportModulePDF('master-report-wrap', `Unified_Master_Report_${start}_to_${end}`);
@@ -3224,6 +3478,45 @@ window.generateUnifiedMasterReport = async function() {
     } finally {
         wrapper.remove();
     }
+};
+
+let masterVisualCharts = {};
+window.openMasterReportExplorer = function() {
+    const start = document.getElementById('rep-start')?.value;
+    const end = document.getElementById('rep-end')?.value;
+    if (!start || !end) return alert('Select the report date range first.');
+    const select = document.getElementById('master-visual-scheme');
+    const schemes = [...new Set(memAccReg.filter(entry => entry.date >= start && entry.date <= end).map(entry => entry.scheme).filter(Boolean))].sort();
+    select.innerHTML = `<option value="All">All Schemes</option>${schemes.map(scheme => `<option value="${escapeHTML(scheme)}">${escapeHTML(scheme)}</option>`).join('')}`;
+    document.getElementById('masterVisualModal').style.display = 'flex';
+    renderMasterReportExplorer(); lucide.createIcons();
+};
+window.closeMasterReportExplorer = function() {
+    document.getElementById('masterVisualModal').style.display = 'none';
+    Object.values(masterVisualCharts).forEach(chart => chart?.destroy()); masterVisualCharts = {};
+};
+window.renderMasterReportExplorer = function() {
+    const start = document.getElementById('rep-start')?.value, end = document.getElementById('rep-end')?.value;
+    const scheme = document.getElementById('master-visual-scheme')?.value || 'All';
+    const focus = document.getElementById('master-visual-focus')?.value || 'deposit';
+    const ledger = memAccReg.filter(entry => entry.date >= start && entry.date <= end && (scheme === 'All' || entry.scheme === scheme));
+    const cash = memCbData.filter(entry => entry.date >= start && entry.date <= end);
+    const deposits = ledger.reduce((sum, entry) => sum + (Number(entry.amt) || 0), 0);
+    const statuses = ['Pending AO', 'At BO', 'Delivered'];
+    document.getElementById('master-visual-kpis').innerHTML = `<article><span>Accounts</span><strong>${ledger.length}</strong></article><article><span>Deposits</span><strong>${money(deposits)}</strong></article><article><span>Pending passbooks</span><strong>${ledger.filter(entry => entry.pbStatus === 'Pending AO').length}</strong></article>`;
+    Object.values(masterVisualCharts).forEach(chart => chart?.destroy()); masterVisualCharts = {};
+    const byDay = {}; ledger.forEach(entry => { if (!byDay[entry.date]) byDay[entry.date] = { accounts: 0, deposits: 0 }; byDay[entry.date].accounts += 1; byDay[entry.date].deposits += Number(entry.amt) || 0; });
+    const dayLabels = Object.keys(byDay).sort();
+    const schemeMap = {}; ledger.forEach(entry => { schemeMap[entry.scheme || 'Unspecified'] = (schemeMap[entry.scheme || 'Unspecified'] || 0) + (Number(entry.amt) || 0); });
+    const cashMap = {}; cash.forEach(entry => { if (!cashMap[entry.date]) cashMap[entry.date] = { receipt: 0, payment: 0 }; cashMap[entry.date][entry.type === 'receipt' ? 'receipt' : 'payment'] += Number(entry.amt) || 0; });
+    const cashLabels = Object.keys(cashMap).sort();
+    const chartOptions = { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } };
+    masterVisualCharts.activity = new Chart(document.getElementById('master-visual-activity'), { type: 'line', data: { labels: dayLabels, datasets: [{ label: focus === 'accounts' ? 'Accounts' : 'Deposits', data: dayLabels.map(day => byDay[day][focus]), borderColor: '#8b1e3f', backgroundColor: 'rgba(139,30,63,.12)', fill: true, tension: .32 }] }, options: { ...chartOptions, scales: { y: { beginAtZero: true } } } });
+    masterVisualCharts.schemes = new Chart(document.getElementById('master-visual-schemes'), { type: 'doughnut', data: { labels: Object.keys(schemeMap).length ? Object.keys(schemeMap) : ['No data'], datasets: [{ data: Object.keys(schemeMap).length ? Object.values(schemeMap) : [1], backgroundColor: ['#8b1e3f','#2563eb','#059669','#d97706','#7c3aed','#db2777'] }] }, options: chartOptions });
+    masterVisualCharts.pipeline = new Chart(document.getElementById('master-visual-pipeline'), { type: 'bar', data: { labels: statuses, datasets: [{ label: 'Accounts', data: statuses.map(status => ledger.filter(entry => entry.pbStatus === status).length), backgroundColor: ['#d97706','#2563eb','#059669'] }] }, options: { ...chartOptions, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } } });
+    masterVisualCharts.cash = new Chart(document.getElementById('master-visual-cash'), { type: 'bar', data: { labels: cashLabels, datasets: [{ label: 'Receipts', data: cashLabels.map(day => cashMap[day].receipt), backgroundColor: '#059669' }, { label: 'Payments', data: cashLabels.map(day => cashMap[day].payment), backgroundColor: '#dc2626' }] }, options: { ...chartOptions, scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true } } } });
+    document.getElementById('master-visual-detail-title').textContent = `${scheme === 'All' ? 'Selected portfolio records' : scheme + ' records'} (${ledger.length})`;
+    document.getElementById('master-visual-detail-body').innerHTML = ledger.length ? `<table class="master-visual-table"><thead><tr><th>Date</th><th>Customer</th><th>Scheme</th><th>Deposit</th><th>Passbook</th></tr></thead><tbody>${ledger.slice(0, 20).map(entry => `<tr><td>${escapeHTML(entry.date)}</td><td>${escapeHTML(entry.name || '—')}</td><td>${escapeHTML(entry.scheme || '—')}</td><td>${money(Number(entry.amt) || 0)}</td><td>${escapeHTML(entry.pbStatus || 'N/A')}</td></tr>`).join('')}</tbody></table>${ledger.length > 20 ? '<p class="master-visual-note">Showing the first 20 records.</p>' : ''}` : '<p class="master-visual-note">No account records match this selection.</p>';
 };
 
 window.forwardMasterReportWhatsApp = function() {
