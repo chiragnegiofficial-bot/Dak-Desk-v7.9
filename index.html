@@ -855,7 +855,7 @@
           <div class="is-filter-bar-right">
             <button class="btn btn-primary" onclick="runInsightsStudio()"><i data-lucide="refresh-cw"></i> Refresh</button>
             <button class="btn btn-outline" onclick="openBOSummary()"><i data-lucide="book-open"></i> BO Summary</button>
-            <button class="btn btn-outline" onclick="generateUnifiedMasterReport()"><i data-lucide="file-stack"></i> Export Report</button>
+            <button class="btn btn-outline" onclick="exportInsightsReport()"><i data-lucide="file-stack"></i> Export Report</button>
           </div>
         </div>
 
@@ -934,6 +934,7 @@
           <div class="card is-section">
             <div class="is-section-head">
               <h3 class="is-section-title"><i data-lucide="kanban"></i> Account Pipeline</h3>
+              <div class="is-filter-group is-compact-filter"><label>View</label><select id="is-pipeline-scope" class="is-select" onchange="runInsightsStudio()"><option value="backlog">Current backlog</option><option value="period">Selected period</option></select></div>
             </div>
             <div class="is-pipeline-grid" id="is-pipeline-grid"></div>
             <div class="is-pipeline-meta" id="is-pipeline-meta"></div>
@@ -990,7 +991,7 @@
             </div>
             <div class="is-report-actions">
               <button class="btn btn-outline" onclick="previewCustomReport()"><i data-lucide="eye"></i> Preview</button>
-              <button class="btn btn-primary" onclick="generateUnifiedMasterReport()"><i data-lucide="file-text"></i> Export PDF</button>
+              <button class="btn btn-primary" onclick="exportCustomReport()"><i data-lucide="file-text"></i> Export PDF</button>
               <button class="btn btn-success" onclick="exportSummaryCSV()"><i data-lucide="sheet"></i> Export Excel</button>
             </div>
           </div>
